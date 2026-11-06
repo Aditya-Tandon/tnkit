@@ -5,7 +5,7 @@ in Python's form for pre-releases (`0.2.0rc1`).
 
 ## [Unreleased]
 
-## [0.2.0rc2] — 2026-11-02
+## [0.2.0rc2] — 2026-11-05
 
 No numerical change: the library code is 0.2.0rc1's apart from comments, docstrings and the
 wording of three error messages (two in `vumps`, one in `itdvp_step`).
