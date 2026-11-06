@@ -169,6 +169,26 @@ def apply_two_site(theta, L, W1, W2, R, be=None):
     return out
 
 
+def fused_two_site(L, W1, W2, R, be=None):
+    """The two-site effective Hamiltonian as three matrices for `apply_two_site_fused`: L as
+    (bra mpo, ket), the MPO pair as S[(s1 s2 wr), (wl s1' s2')] and R as (bra, mpo ket).
+    Built once per local problem."""
+    be = be or _NP
+    p, wl, q = L.shape
+    wr, d1, d2 = W2.shape[1], W1.shape[2], W2.shape[2]
+    S = be.einsum("wmsi,mrtj->strwij", W1, W2).reshape(d1 * d2 * wr, wl * d1 * d2)
+    return L.reshape(p * wl, q), S, R.reshape(R.shape[0], wr * R.shape[2])
+
+
+def apply_two_site_fused(theta, Lm, S, Rm):
+    """`apply_two_site` on the matrices of `fused_two_site` (dense tensors only): two GEMMs and
+    one batched GEMM, with no transposes of the large intermediates."""
+    q, d1, d2, b = theta.shape
+    x = (Lm @ theta.reshape(q, -1)).reshape(-1, S.shape[1], b)
+    x = S @ x                                        # (p, s1 s2 wr, b), batched over p
+    return (x.reshape(-1, Rm.shape[1]) @ Rm.T).reshape(-1, d1, d2, Rm.shape[0])
+
+
 def apply_one_site(M, L, W, R, be=None):
     """(H_eff M)[a,s,b] for a single-site tensor M=(a,s,b). Used by TDVP's one-site
     back-evolution. L=(bra,mpo,ket), W=(wl,wr,s,s'), R=(bra,mpo,ket)."""
@@ -655,7 +675,11 @@ def _dmrg(mpo: Sequence[Tensor], chi: int, o: DMRGOptions) -> Tuple[float, MPS, 
         W1, W2 = mpo[i], mpo[i + 1]
         Li, Ri = L[i], R[i + 2]
         theta0 = be.einsum("asc,ctb->astb", M[i], M[i + 1])
-        apply = lambda t: apply_two_site(t, Li, W1, W2, Ri, be)
+        if block:
+            apply = lambda t: apply_two_site(t, Li, W1, W2, Ri, be)
+        else:
+            op = fused_two_site(Li, W1, W2, Ri, be)
+            apply = lambda t: apply_two_site_fused(t, *op)
         apply_lo = None
         # Mixed-precision inner matvec: operands cast to complex64 once per block; torch.einsum
         # then runs the contraction on tensor cores, with the eigensolver's fp64 accumulation
