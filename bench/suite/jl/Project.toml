@@ -1,0 +1,17 @@
+[deps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+ITensorMPS = "0d1a4710-d33b-49a5-8f18-73bdf49b47e2"
+ITensors = "9136182c-28ba-11e9-034c-db9fb085ebd5"
+cuTENSOR = "011b41b2-24ef-40a8-b3eb-fa098493e9e1"
+
+[extras]
+CUDA_Compiler_jll = "d1e2174e-dfdc-576e-b43e-73b79eb1aca8"
+CUDA_Driver_jll = "4ee394cb-3365-5eb0-8335-949819d2adfc"
+CUDA_Runtime_jll = "76a88914-d11a-5bdc-97e0-2f5a05c973a2"
+
+[compat]
+CUDA = "=6.5.0"
+ITensorMPS = "=0.4.2"
+ITensors = "=0.9.32"
+cuTENSOR = "=6.5.0"
+julia = "=1.13.3"

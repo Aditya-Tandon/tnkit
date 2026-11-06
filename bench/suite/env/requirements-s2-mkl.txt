@@ -1,0 +1,4 @@
+# Suite 2: block2's runtime BLAS/LAPACK. Its wheel links libmkl_{intel_lp64,core,gnu_thread,avx2,
+# avx512}.so.2 (Requires-Dist mkl<=2024.2.2); the libraries are the wheel's data files, unpacked
+# by install_env.sh. Linux wheel, sha256 from PyPI.
+mkl==2024.2.2 --hash=sha256:915e81274ac20964e60156ed940e0eeb29dab0c282b915ad2e231db0021b980d

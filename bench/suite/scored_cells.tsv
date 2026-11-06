@@ -1,0 +1,252 @@
+spec	measure	workload	hardware	device	lib	sym	threads	eps	status	chi	med_s	min_s	max_s
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	block2	su2	16	0.001	reached	128	3.968	3.721	3.985
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	block2	su2	16	0.0003	reached	128	3.968	3.721	3.985
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	block2	su2	16	0.0001	reached	128	3.968	3.721	3.985
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	block2	su2	4	0.001	reached	256	13.64	13.42	14.01
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	block2	su2	4	0.0003	reached	256	13.64	13.42	14.01
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	block2	su2	4	0.0001	reached	256	13.64	13.42	14.01
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	block2	u1	16	0.001	reached	256	20.45	19.95	20.95
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	block2	u1	16	0.0003	reached	256	20.45	19.95	20.95
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	block2	u1	16	0.0001	reached	512	57.16	56.98	58.21
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	block2	u1	4	0.001	reached	256	24.21	24.17	24.45
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	block2	u1	4	0.0003	reached	256	24.21	24.17	24.45
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	block2	u1	4	0.0001	not reached				
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	itensor	u1	16	0.001	reached	256	49.41	48.09	49.43
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	itensor	u1	16	0.0003	reached	256	49.41	48.09	49.43
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	itensor	u1	16	0.0001	reached	512	97.28	87.59	113.5
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	itensor	u1	4	0.001	reached	256	74.85	74.76	75.73
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	itensor	u1	4	0.0003	reached	256	74.85	74.76	75.73
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	itensor	u1	4	0.0001	not reached				
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	tenpy	u1	16	0.001	reached	256	734.8	730.3	742
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	tenpy	u1	16	0.0003	reached	256	734.8	730.3	742
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	tenpy	u1	16	0.0001	reached	512	1416	1416	1420
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	tenpy	u1	4	0.001	reached	256	44.47	44.33	44.65
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	tenpy	u1	4	0.0003	reached	256	44.47	44.33	44.65
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	tenpy	u1	4	0.0001	not reached				
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	tnkit	u1	16	0.001	reached	256	258.1	258	270.3
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	tnkit	u1	16	0.0003	reached	256	258.1	258	270.3
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	tnkit	u1	16	0.0001	reached	512	608.4	606.7	612.4
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	tnkit	u1	4	0.001	reached	256	227.9	227.5	229.9
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	tnkit	u1	4	0.0003	reached	256	227.9	227.5	229.9
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	tnkit	u1	4	0.0001	not reached				
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	yastn	u1	16	0.001	reached	256	249.9	246.9	250.3
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	yastn	u1	16	0.0003	reached	256	249.9	246.9	250.3
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	yastn	u1	16	0.0001	reached	512	240.1	238	241
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	yastn	u1	4	0.001	reached	256	25.12	24.84	25.58
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	yastn	u1	4	0.0003	reached	256	25.12	24.84	25.58
+suite_2.json	time_to_eps	heis_cyl6	cpu16	AMD EPYC 9655 96-Core Processor	yastn	u1	4	0.0001	not reached				
+suite_2.json	time_to_eps	heis_cyl6	gpu-3g	3g.47gb	itensor	dense	3	0.001	reached	256	150.3	145.2	157.5
+suite_2.json	time_to_eps	heis_cyl6	gpu-3g	3g.47gb	itensor	dense	3	0.0003	reached	256	150.3	145.2	157.5
+suite_2.json	time_to_eps	heis_cyl6	gpu-3g	3g.47gb	itensor	dense	3	0.0001	reached	512	200.1	199.9	204.8
+suite_2.json	time_to_eps	heis_cyl6	gpu-3g	3g.47gb	itensor	u1	3	0.001	reached	256	716	706.8	717.7
+suite_2.json	time_to_eps	heis_cyl6	gpu-3g	3g.47gb	itensor	u1	3	0.0003	reached	256	716	706.8	717.7
+suite_2.json	time_to_eps	heis_cyl6	gpu-3g	3g.47gb	itensor	u1	3	0.0001	reached	512	602	592.7	605.7
+suite_2.json	time_to_eps	heis_cyl6	gpu-3g	3g.47gb	tnkit	dense	3	0.001	reached	256	108.2	107.5	108.6
+suite_2.json	time_to_eps	heis_cyl6	gpu-3g	3g.47gb	tnkit	dense	3	0.0003	reached	256	108.2	107.5	108.6
+suite_2.json	time_to_eps	heis_cyl6	gpu-3g	3g.47gb	tnkit	dense	3	0.0001	reached	512	168.3	168.2	168.4
+suite_2.json	time_to_eps	heis_cyl6	gpu-3g	3g.47gb	tnkit	u1	3	0.001	reached	256	94.15	93.54	96.03
+suite_2.json	time_to_eps	heis_cyl6	gpu-3g	3g.47gb	tnkit	u1	3	0.0003	reached	256	94.15	93.54	96.03
+suite_2.json	time_to_eps	heis_cyl6	gpu-3g	3g.47gb	tnkit	u1	3	0.0001	reached	512	110	109.9	111.2
+suite_2.json	time_to_eps	heis_cyl6	gpu-3g	3g.47gb	yastn	dense	3	0.001	reached	256	37.61	36.93	38.13
+suite_2.json	time_to_eps	heis_cyl6	gpu-3g	3g.47gb	yastn	dense	3	0.0003	reached	256	37.61	36.93	38.13
+suite_2.json	time_to_eps	heis_cyl6	gpu-3g	3g.47gb	yastn	dense	3	0.0001	reached	512	73.61	73.52	73.63
+suite_2.json	time_to_eps	heis_cyl6	gpu-3g	3g.47gb	yastn	u1	3	0.001	reached	256	98.65	95.81	100.6
+suite_2.json	time_to_eps	heis_cyl6	gpu-3g	3g.47gb	yastn	u1	3	0.0003	reached	256	98.65	95.81	100.6
+suite_2.json	time_to_eps	heis_cyl6	gpu-3g	3g.47gb	yastn	u1	3	0.0001	reached	512	108.7	108	109.7
+suite_2.json	time_to_eps	tfim_excited	cpu4	AMD EPYC-Genoa Processor	itensor	dense	4	1e-06	reached	16	5.452	5.253	5.75
+suite_2.json	time_to_eps	tfim_excited	cpu4	AMD EPYC-Genoa Processor	itensor	dense	4	1e-08	reached	16	5.452	5.253	5.75
+suite_2.json	time_to_eps	tfim_excited	cpu4	AMD EPYC-Genoa Processor	itensor	dense	4	1e-10	reached	32	14.65	14.52	14.91
+suite_2.json	time_to_eps	tfim_excited	cpu4	AMD EPYC-Genoa Processor	tenpy	dense	4	1e-06	reached	16	38.05	37.94	39.54
+suite_2.json	time_to_eps	tfim_excited	cpu4	AMD EPYC-Genoa Processor	tenpy	dense	4	1e-08	reached	16	38.05	37.94	39.54
+suite_2.json	time_to_eps	tfim_excited	cpu4	AMD EPYC-Genoa Processor	tenpy	dense	4	1e-10	reached	32	22.56	20.61	23.41
+suite_2.json	time_to_eps	tfim_excited	cpu4	AMD EPYC-Genoa Processor	tnkit	dense	4	1e-06	reached	16	5.574	5.503	5.63
+suite_2.json	time_to_eps	tfim_excited	cpu4	AMD EPYC-Genoa Processor	tnkit	dense	4	1e-08	reached	16	5.574	5.503	5.63
+suite_2.json	time_to_eps	tfim_excited	cpu4	AMD EPYC-Genoa Processor	tnkit	dense	4	1e-10	reached	32	11.05	10.92	11.46
+suite_2.json	time_to_eps	tfim_excited	cpu4	AMD EPYC-Genoa Processor	yastn	dense	4	1e-06	reached	16	12.52	12.43	12.81
+suite_2.json	time_to_eps	tfim_excited	cpu4	AMD EPYC-Genoa Processor	yastn	dense	4	1e-08	reached	16	12.52	12.43	12.81
+suite_2.json	time_to_eps	tfim_excited	cpu4	AMD EPYC-Genoa Processor	yastn	dense	4	1e-10	reached	32	19.52	19.15	19.66
+suite_2.json	time_to_eps	tfim_excited	gpu-1g	1g.12gb	itensor	dense	3	1e-06	reached	16	71.74	71.35	72.18
+suite_2.json	time_to_eps	tfim_excited	gpu-1g	1g.12gb	itensor	dense	3	1e-08	reached	16	71.74	71.35	72.18
+suite_2.json	time_to_eps	tfim_excited	gpu-1g	1g.12gb	itensor	dense	3	1e-10	reached	32	105.9	104.6	110.7
+suite_2.json	time_to_eps	tfim_excited	gpu-1g	1g.12gb	tnkit	dense	3	1e-06	reached	16	24.46	24.37	25.12
+suite_2.json	time_to_eps	tfim_excited	gpu-1g	1g.12gb	tnkit	dense	3	1e-08	reached	16	24.46	24.37	25.12
+suite_2.json	time_to_eps	tfim_excited	gpu-1g	1g.12gb	tnkit	dense	3	1e-10	reached	32	18.21	18.17	18.25
+suite_2.json	time_to_eps	tfim_excited	gpu-1g	1g.12gb	yastn	dense	3	1e-06	reached	16	74.01	73.81	75.44
+suite_2.json	time_to_eps	tfim_excited	gpu-1g	1g.12gb	yastn	dense	3	1e-08	reached	16	74.01	73.81	75.44
+suite_2.json	time_to_eps	tfim_excited	gpu-1g	1g.12gb	yastn	dense	3	1e-10	not reached				
+suite_2.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	itensor	dense	4	0.01	reached	64	1177	1163	1179
+suite_2.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	itensor	dense	4	0.001	reached	128	3078	3000	3106
+suite_2.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	itensor	dense	4	0.0001	reached	128	3078	3000	3106
+suite_2.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	itensor	u1	4	0.01	reached	64	1262	1243	1266
+suite_2.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	itensor	u1	4	0.001	reached	128	1547	1528	1562
+suite_2.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	itensor	u1	4	0.0001	reached	128	1547	1528	1562
+suite_2.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	tnkit	dense	4	0.01	reached	64	204.9	200.5	206
+suite_2.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	tnkit	dense	4	0.001	reached	128	618.6	612.1	647.5
+suite_2.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	tnkit	dense	4	0.0001	reached	128	618.6	612.1	647.5
+suite_2.json	time_to_eps	xx_quench	gpu-1g	1g.12gb	itensor	dense	3	0.01	timeout	64			
+suite_2.json	time_to_eps	xx_quench	gpu-1g	1g.12gb	itensor	dense	3	0.001	timeout	64			
+suite_2.json	time_to_eps	xx_quench	gpu-1g	1g.12gb	itensor	dense	3	0.0001	timeout	64			
+suite_2.json	time_to_eps	xx_quench	gpu-1g	1g.12gb	itensor	u1	3	0.01	timeout	32			
+suite_2.json	time_to_eps	xx_quench	gpu-1g	1g.12gb	itensor	u1	3	0.001	timeout	32			
+suite_2.json	time_to_eps	xx_quench	gpu-1g	1g.12gb	itensor	u1	3	0.0001	timeout	32			
+suite_2.json	time_to_eps	xx_quench	gpu-1g	1g.12gb	tnkit	dense	3	0.01	reached	64	71.95	71.7	72.51
+suite_2.json	time_to_eps	xx_quench	gpu-1g	1g.12gb	tnkit	dense	3	0.001	reached	128	99	98.11	99.72
+suite_2.json	time_to_eps	xx_quench	gpu-1g	1g.12gb	tnkit	dense	3	0.0001	reached	128	99	98.11	99.72
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	itensor	dense	3	0.01	timeout	256			
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	itensor	dense	3	0.001	timeout	256			
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	itensor	dense	3	0.0001	timeout	256			
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	itensor	u1	3	0.01	timeout	256			
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	itensor	u1	3	0.001	timeout	256			
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	itensor	u1	3	0.0001	timeout	256			
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	qtea	dense	3	0.01	reached	256	797.4	796.6	798.2
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	qtea	dense	3	0.001	reached	512	1765	1764	1765
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	qtea	dense	3	0.0001	not reached				
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	tnkit	dense	3	0.01	reached	512	300.8	300.6	300.9
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	tnkit	dense	3	0.001	reached	512	300.8	300.6	300.9
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	tnkit	dense	3	0.0001	reached	1024	722.6	722.6	722.8
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	tnkit	u1	3	0.01	reached	512	280	279.7	280.7
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	tnkit	u1	3	0.001	reached	512	280	279.7	280.7
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	tnkit	u1	3	0.0001	reached	1024	410.2	408.7	411.9
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	yastn	dense	3	0.01	reached	512	326.2	324.8	326.4
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	yastn	dense	3	0.001	reached	512	326.2	324.8	326.4
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	yastn	dense	3	0.0001	reached	1024	555	554.9	555.7
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	yastn	u1	3	0.01	reached	512	1267	1265	1277
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	yastn	u1	3	0.001	reached	512	1267	1265	1277
+suite_2.json	time_to_eps	xx_quench_large	gpu-3g	3g.47gb	yastn	u1	3	0.0001	not reached				
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	block2	su2	16	1e-06	reached	256	5.696	5.66	5.831
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	block2	su2	16	1e-08	reached	256	5.696	5.66	5.831
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	block2	su2	16	1e-10	reached	256	5.696	5.66	5.831
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	block2	su2	4	1e-06	reached	256	6.461	6.446	6.481
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	block2	su2	4	1e-08	reached	256	6.461	6.446	6.481
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	block2	su2	4	1e-10	reached	256	6.461	6.446	6.481
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	block2	u1	16	1e-06	reached	256	7.603	7.57	7.811
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	block2	u1	16	1e-08	reached	256	7.603	7.57	7.811
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	block2	u1	16	1e-10	reached	256	7.603	7.57	7.811
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	block2	u1	4	1e-06	reached	256	9.054	9.023	9.103
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	block2	u1	4	1e-08	reached	256	9.054	9.023	9.103
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	block2	u1	4	1e-10	reached	256	9.054	9.023	9.103
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	itensor	u1	16	1e-06	reached	256	11.49	11.42	11.5
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	itensor	u1	16	1e-08	reached	256	11.49	11.42	11.5
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	itensor	u1	16	1e-10	reached	256	11.49	11.42	11.5
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	itensor	u1	4	1e-06	reached	256	13.59	13.07	13.66
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	itensor	u1	4	1e-08	reached	256	13.59	13.07	13.66
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	itensor	u1	4	1e-10	reached	256	13.59	13.07	13.66
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	tenpy	u1	16	1e-06	reached	256	473.4	471.1	474.7
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	tenpy	u1	16	1e-08	reached	256	473.4	471.1	474.7
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	tenpy	u1	16	1e-10	reached	256	473.4	471.1	474.7
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	tenpy	u1	4	1e-06	reached	256	7.764	7.763	7.796
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	tenpy	u1	4	1e-08	reached	256	7.764	7.763	7.796
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	tenpy	u1	4	1e-10	reached	256	7.764	7.763	7.796
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	tnkit	u1	16	1e-06	reached	256	18.72	18.5	18.73
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	tnkit	u1	16	1e-08	reached	256	18.72	18.5	18.73
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	tnkit	u1	16	1e-10	reached	256	18.72	18.5	18.73
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	tnkit	u1	4	1e-06	reached	256	15.35	15.31	15.46
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	tnkit	u1	4	1e-08	reached	256	15.35	15.31	15.46
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	tnkit	u1	4	1e-10	reached	256	15.35	15.31	15.46
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	yastn	u1	16	1e-06	reached	256	145.3	143.6	149.8
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	yastn	u1	16	1e-08	reached	256	145.3	143.6	149.8
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	yastn	u1	16	1e-10	not reached				
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	yastn	u1	4	1e-06	reached	256	8.618	8.437	8.626
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	yastn	u1	4	1e-08	reached	256	8.618	8.437	8.626
+suite_2.json	time_to_eps	xxz_dmrg	cpu16	AMD EPYC 9655 96-Core Processor	yastn	u1	4	1e-10	not reached				
+suite_2.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	block2	su2	4	1e-06	reached	32	1.173	1.058	1.21
+suite_2.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	block2	su2	4	1e-08	reached	32	1.173	1.058	1.21
+suite_2.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	block2	su2	4	1e-10	reached	32	1.173	1.058	1.21
+suite_2.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	block2	u1	4	1e-06	reached	32	1.269	1.204	1.282
+suite_2.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	block2	u1	4	1e-08	reached	64	2.524	2.204	2.601
+suite_2.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	block2	u1	4	1e-10	reached	128	6.963	6.948	7.296
+suite_2.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	itensor	dense	4	1e-06	reached	32	3.057	2.938	3.186
+suite_2.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	itensor	dense	4	1e-08	reached	64	9.5	9.149	9.716
+suite_2.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	itensor	dense	4	1e-10	reached	128	35.94	35.64	36.34
+suite_2.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	itensor	u1	4	1e-06	reached	32	5.261	5.219	5.611
+suite_2.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	itensor	u1	4	1e-08	reached	64	6.277	6.174	6.633
+suite_2.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	itensor	u1	4	1e-10	reached	128	12.08	11.58	12.2
+suite_2.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	tnkit	dense	4	1e-06	reached	32	6.335	6.24	6.866
+suite_2.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	tnkit	dense	4	1e-08	reached	64	21.6	21.17	22
+suite_2.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	tnkit	dense	4	1e-10	reached	128	103.9	103.1	106.5
+suite_2.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	tnkit	u1	4	1e-06	reached	32	9.576	9.425	9.709
+suite_2.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	tnkit	u1	4	1e-08	reached	64	7.493	7.327	7.804
+suite_2.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	tnkit	u1	4	1e-10	reached	128	12.74	12.57	12.75
+suite_2.json	time_to_eps	xxz_dmrg	gpu-1g	1g.12gb	itensor	dense	3	1e-06	reached	32	51.43	50.94	53.06
+suite_2.json	time_to_eps	xxz_dmrg	gpu-1g	1g.12gb	itensor	dense	3	1e-08	reached	64	76.88	75.66	77.13
+suite_2.json	time_to_eps	xxz_dmrg	gpu-1g	1g.12gb	itensor	dense	3	1e-10	reached	128	98.66	98.54	99.68
+suite_2.json	time_to_eps	xxz_dmrg	gpu-1g	1g.12gb	itensor	u1	3	1e-06	reached	32	124.3	122.5	124.4
+suite_2.json	time_to_eps	xxz_dmrg	gpu-1g	1g.12gb	itensor	u1	3	1e-08	reached	64	132	131.6	133.7
+suite_2.json	time_to_eps	xxz_dmrg	gpu-1g	1g.12gb	itensor	u1	3	1e-10	reached	128	180.5	178.6	183.2
+suite_2.json	time_to_eps	xxz_dmrg	gpu-1g	1g.12gb	tnkit	dense	3	1e-06	reached	32	7.64	7.613	7.761
+suite_2.json	time_to_eps	xxz_dmrg	gpu-1g	1g.12gb	tnkit	dense	3	1e-08	reached	64	6.768	6.663	6.821
+suite_2.json	time_to_eps	xxz_dmrg	gpu-1g	1g.12gb	tnkit	dense	3	1e-10	reached	128	9.54	9.507	9.803
+suite_2.json	s_per_step	tf_collision	gpu-3g	3g.47gb	tnkit	dense	3		ok	256	78.28	78.14	80.1
+suite_2.json	s_per_step	tf_collision	gpu-3g	3g.47gb	tnkit	u1	3		ok	256	18.81	18.79	18.82
+suite_2.json	s_per_step	tf_collision	gpu-3g	3g.47gb	yastn	u1	3		ok	256	153.3	152.8	155.3
+suite_2.json	s_per_sweep	heis_throughput	gpu-1g	1g.12gb	qtea	dense	3		ok	256	9.379	9.362	9.381
+suite_2.json	s_per_sweep	heis_throughput	gpu-1g	1g.12gb	qtea	dense	3		ok	512	20.33	20.32	20.36
+suite_2.json	s_per_sweep	heis_throughput	gpu-1g	1g.12gb	tnkit	dense	3		ok	256	5.357	5.356	5.371
+suite_2.json	s_per_sweep	heis_throughput	gpu-1g	1g.12gb	tnkit	dense	3		ok	512	14.86	14.85	14.93
+suite_2.json	s_per_sweep	heis_throughput	gpu-1g	1g.12gb	tnkit	u1	3		ok	256	3.945	3.942	3.966
+suite_2.json	s_per_sweep	heis_throughput	gpu-1g	1g.12gb	tnkit	u1	3		ok	512	7.777	7.752	7.984
+suite_2.json	s_per_sweep	heis_throughput	gpu-1g	1g.12gb	tnkit	u1	3		ok	1024	17.33	17.32	17.37
+suite_2.json	s_per_sweep	heis_throughput	gpu-1g	1g.12gb	yastn	dense	3		ok	256	7.614	7.614	7.615
+suite_2.json	s_per_sweep	heis_throughput	gpu-1g	1g.12gb	yastn	u1	3		ok	256	9.535	9.527	9.585
+suite_2.json	s_per_sweep	heis_throughput	gpu-1g	1g.12gb	yastn	u1	3		ok	512	16.3	16.17	16.39
+suite_2.json	s_per_sweep	heis_throughput	gpu-1g	1g.12gb	yastn	u1	3		ok	1024	38.23	38.17	38.26
+suite_2.json	s_per_sweep	heis_throughput	gpu-3g	3g.47gb	itensor	u1	3		ok	2048	43.67	43.07	43.82
+suite_2.json	s_per_sweep	heis_throughput	gpu-3g	3g.47gb	qtea	dense	3		ok	256	7.626	7.598	7.659
+suite_2.json	s_per_sweep	heis_throughput	gpu-3g	3g.47gb	qtea	dense	3		ok	512	9.668	9.667	9.726
+suite_2.json	s_per_sweep	heis_throughput	gpu-3g	3g.47gb	qtea	dense	3		ok	1024	25.2	25.19	25.2
+suite_2.json	s_per_sweep	heis_throughput	gpu-3g	3g.47gb	tnkit	dense	3		ok	256	4.815	4.813	4.835
+suite_2.json	s_per_sweep	heis_throughput	gpu-3g	3g.47gb	tnkit	dense	3		ok	512	11.89	11.88	11.91
+suite_2.json	s_per_sweep	heis_throughput	gpu-3g	3g.47gb	tnkit	dense	3		ok	1024	38.41	38.4	38.41
+suite_2.json	s_per_sweep	heis_throughput	gpu-3g	3g.47gb	tnkit	u1	3		ok	256	3.949	3.94	4.003
+suite_2.json	s_per_sweep	heis_throughput	gpu-3g	3g.47gb	tnkit	u1	3		ok	512	7.482	7.473	7.527
+suite_2.json	s_per_sweep	heis_throughput	gpu-3g	3g.47gb	tnkit	u1	3		ok	1024	15.73	15.73	15.8
+suite_2.json	s_per_sweep	heis_throughput	gpu-3g	3g.47gb	tnkit	u1	3		ok	2048	37.21	37.21	37.28
+suite_2.json	s_per_sweep	heis_throughput	gpu-3g	3g.47gb	yastn	u1	3		ok	256	9.763	9.757	9.99
+suite_2.json	s_per_sweep	heis_throughput	gpu-3g	3g.47gb	yastn	u1	3		ok	512	15.99	15.98	16.15
+suite_2.json	s_per_sweep	heis_throughput	gpu-3g	3g.47gb	yastn	u1	3		ok	1024	33.95	33.95	33.97
+suite_2.json	s_per_sweep	heis_throughput	gpu-3g	3g.47gb	yastn	u1	3		ok	2048	97.65	97.4	97.68
+suite_2u.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	tenpy	u1		0.01	reached	64	185.5	184.5	189.4
+suite_2u.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	tenpy	u1		0.001	reached	128	262.4	259.7	265.6
+suite_2u.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	tenpy	u1		0.0001	reached	128	262.4	259.7	265.6
+suite_2u.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	tnkit	dense		0.01	reached	64	204	202	204.1
+suite_2u.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	tnkit	dense		0.001	reached	128	619.1	605.3	627.5
+suite_2u.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	tnkit	dense		0.0001	reached	128	619.1	605.3	627.5
+suite_2u.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	tnkit	u1		0.01	reached	64	33.71	32.8	34.21
+suite_2u.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	tnkit	u1		0.001	reached	128	123.4	122.2	126.6
+suite_2u.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	tnkit	u1		0.0001	reached	128	123.4	122.2	126.6
+suite_2u.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	yastn	u1		0.01	reached	64	99.94	97.95	104.7
+suite_2u.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	yastn	u1		0.001	reached	128	184	180.7	190.6
+suite_2u.json	time_to_eps	xx_quench	cpu4	AMD EPYC-Genoa Processor	yastn	u1		0.0001	reached	128	184	180.7	190.6
+suite_2u.json	time_to_eps	xx_quench	gpu-1g	1g.12gb	tnkit	dense		0.01	reached	64	71.4	71.34	71.65
+suite_2u.json	time_to_eps	xx_quench	gpu-1g	1g.12gb	tnkit	dense		0.001	reached	128	98.02	97.4	98.23
+suite_2u.json	time_to_eps	xx_quench	gpu-1g	1g.12gb	tnkit	dense		0.0001	reached	128	98.02	97.4	98.23
+suite_2u.json	time_to_eps	xx_quench	gpu-1g	1g.12gb	tnkit	u1		0.01	reached	64	106.3	105.9	106.4
+suite_2u.json	time_to_eps	xx_quench	gpu-1g	1g.12gb	tnkit	u1		0.001	reached	128	126.2	126.2	126.2
+suite_2u.json	time_to_eps	xx_quench	gpu-1g	1g.12gb	tnkit	u1		0.0001	reached	128	126.2	126.2	126.2
+suite_2u.json	time_to_eps	xx_quench	gpu-1g	1g.12gb	yastn	u1		0.01	reached	64	603.2	600.8	607.6
+suite_2u.json	time_to_eps	xx_quench	gpu-1g	1g.12gb	yastn	u1		0.001	reached	128	708.8	708.7	717.9
+suite_2u.json	time_to_eps	xx_quench	gpu-1g	1g.12gb	yastn	u1		0.0001	reached	128	708.8	708.7	717.9
+suite_2u.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	tenpy	u1		1e-06	reached	32	10	9.981	10.3
+suite_2u.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	tenpy	u1		1e-08	reached	64	10.86	10.83	10.98
+suite_2u.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	tenpy	u1		1e-10	reached	128	8.388	8.381	8.391
+suite_2u.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	tnkit	dense		1e-06	reached	32	8.546	8.289	8.655
+suite_2u.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	tnkit	dense		1e-08	reached	64	28.82	28.67	28.86
+suite_2u.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	tnkit	dense		1e-10	reached	128	106.9	104.8	111.5
+suite_2u.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	tnkit	u1		1e-06	reached	32	9.966	9.711	9.972
+suite_2u.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	tnkit	u1		1e-08	reached	64	10.43	10.39	10.65
+suite_2u.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	tnkit	u1		1e-10	reached	128	14.03	13.39	14.12
+suite_2u.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	yastn	u1		1e-06	reached	32	6.317	6.282	6.365
+suite_2u.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	yastn	u1		1e-08	reached	64	8.279	8.21	8.319
+suite_2u.json	time_to_eps	xxz_dmrg	cpu4	AMD EPYC-Genoa Processor	yastn	u1		1e-10	reached	128	27.41	26.95	27.99
+suite_2u.json	time_to_eps	xxz_dmrg	gpu-1g	1g.12gb	tnkit	dense		1e-06	reached	32	10.95	10.87	11.03
+suite_2u.json	time_to_eps	xxz_dmrg	gpu-1g	1g.12gb	tnkit	dense		1e-08	reached	64	10.21	10.16	10.37
+suite_2u.json	time_to_eps	xxz_dmrg	gpu-1g	1g.12gb	tnkit	dense		1e-10	reached	128	9.536	9.517	9.568
+suite_2u.json	time_to_eps	xxz_dmrg	gpu-1g	1g.12gb	tnkit	u1		1e-06	reached	32	18.8	18.6	18.89
+suite_2u.json	time_to_eps	xxz_dmrg	gpu-1g	1g.12gb	tnkit	u1		1e-08	reached	64	19.46	19.42	19.59
+suite_2u.json	time_to_eps	xxz_dmrg	gpu-1g	1g.12gb	tnkit	u1		1e-10	reached	128	13.25	13.17	13.28
+suite_2u.json	time_to_eps	xxz_dmrg	gpu-1g	1g.12gb	yastn	u1		1e-06	reached	32	31.87	31.73	31.91
+suite_2u.json	time_to_eps	xxz_dmrg	gpu-1g	1g.12gb	yastn	u1		1e-08	reached	64	31.52	31.35	31.57
+suite_2u.json	time_to_eps	xxz_dmrg	gpu-1g	1g.12gb	yastn	u1		1e-10	reached	128	48.56	48.53	48.72
+suite_2u.json	s_per_step	tf_collision	gpu-1g	1g.12gb	tnkit	dense			ok	256	119.1	118.5	119.8
+suite_2u.json	s_per_step	tf_collision	gpu-1g	1g.12gb	tnkit	u1			ok	256	18.17	18.15	18.21
+suite_2u.json	s_per_step	tf_collision	gpu-1g	1g.12gb	yastn	u1			ok	256	148	146.6	148.3

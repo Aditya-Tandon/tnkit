@@ -1,0 +1,57 @@
+[build-system]
+requires = ["setuptools>=77"]   # for the PEP 639 `license = "MIT"` form
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tnkit"
+license = "MIT"
+license-files = ["LICENSE"]
+version = "0.2.0rc2"
+description = "Matrix-product-state library with DMRG and TDVP on numpy and PyTorch backends, on CPUs and GPUs"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Aditya Tandon" }]
+keywords = ["tensor-networks", "dmrg", "mps", "tdvp", "vumps", "quantum-many-body", "gpu"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Scientific/Engineering :: Physics",
+]
+
+# torch is imported lazily, so it is an extra (checked in tests/test_packaging.py).
+dependencies = ["numpy>=1.24", "scipy>=1.12"]
+
+[project.optional-dependencies]
+# CPU and Apple silicon (torch-mps is single precision).
+torch = ["torch>=2.0"]
+# NVIDIA, on Linux: PyPI's torch wheel is a CUDA build. On Windows, or for a chosen CUDA
+# version or a CPU-only build, install torch from pytorch.org first.
+cuda = ["torch>=2.0"]
+test = ["pytest>=7"]
+# The documentation site (docs/).
+docs = [
+  "sphinx>=8.0",
+  "pydata-sphinx-theme>=0.16",
+  "myst-parser>=4.0",
+  "myst-nb>=1.1",
+  "sphinx-copybutton>=0.5.2",
+  "sphinx-design>=0.6",
+]
+
+[project.urls]
+Repository = "https://github.com/Aditya-Tandon/tnkit"
+
+[tool.setuptools]
+# Listed, not discovered, so no other directory can enter the wheel. MANIFEST.in does the
+# same for the sdist; tests/test_packaging.py checks both.
+packages = ["tnkit", "tnkit.ift"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+  "cuda: needs a CUDA device; skipped automatically when none is present",
+  "slow: long-running (minutes); deselect with -m 'not slow'",
+]

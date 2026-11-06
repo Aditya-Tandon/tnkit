@@ -1,0 +1,466 @@
+{
+ "name": "tnkit-bench-suite-1-smoke",
+ "repeats": 1,
+ "envs": {
+  "main": {
+   "site": "${TNBENCH_SITE_MAIN}"
+  },
+  "qtea": {
+   "site": "${TNBENCH_SITE_QTEA}"
+  }
+ },
+ "workloads": {
+  "tfim_dmrg": {
+   "kind": "dmrg",
+   "model": "tfim",
+   "N": 12,
+   "g": 1.0,
+   "chis": [
+    4,
+    8
+   ],
+   "max_sweeps": 4,
+   "e_tol": 1e-10,
+   "sv_tol": 1e-14,
+   "accuracy": {
+    "metric": "relative energy error against the exact free-fermion energy",
+    "eps": [
+     1e-08,
+     1e-10,
+     1e-12
+    ]
+   },
+   "timeout_s": {
+    "cpu": 300,
+    "gpu": 300
+   }
+  },
+  "xxz_dmrg": {
+   "kind": "dmrg",
+   "model": "xxz",
+   "N": 12,
+   "J": 1.0,
+   "Jz": 1.0,
+   "chis": [
+    4,
+    8
+   ],
+   "max_sweeps": 4,
+   "e_tol": 1e-10,
+   "sv_tol": 1e-14,
+   "accuracy": {
+    "metric": "relative energy error against the reference (chi 512, two libraries agreeing)",
+    "eps": [
+     1e-06,
+     1e-08,
+     1e-10
+    ]
+   },
+   "reference": {
+    "chi": 16,
+    "agree_rel": 1e-10
+   },
+   "timeout_s": {
+    "cpu": 300,
+    "gpu": 300
+   }
+  },
+  "xx_quench": {
+   "kind": "tdvp",
+   "model": "xx",
+   "N": 8,
+   "J": 1.0,
+   "Jz": 0.0,
+   "dt": 0.05,
+   "T": 0.2,
+   "chis": [
+    4,
+    8
+   ],
+   "svd_tol": 1e-12,
+   "sv_tol": 1e-06,
+   "accuracy": {
+    "metric": "max over sites of |<S^z_i(T)> - exact| (free fermions)",
+    "eps": [
+     0.01,
+     0.001,
+     0.0001
+    ]
+   },
+   "timeout_s": {
+    "cpu": 300,
+    "gpu": 300
+   }
+  },
+  "tf_collision": {
+   "kind": "collision",
+   "N": 160,
+   "chis": [
+    256
+   ],
+   "state": "${TNBENCH_DATA}/state_gt0020.000.npz",
+   "mpo": "${TNBENCH_DATA}/mpo.npz",
+   "dt": 0.05,
+   "steps": 2,
+   "exclude_first": 1,
+   "svd_tol": 1e-08,
+   "sv_tol": 0.0001,
+   "krylov_m": 80,
+   "accuracy": {
+    "metric": "max over qubits of |<n_j> - <n_j>(tnkit, same symmetry, rep 1)| after the steps",
+    "eps": [
+     0.0001
+    ]
+   },
+   "timeout_s": {
+    "gpu": 300
+   }
+  }
+ },
+ "pods": {
+  "cpu-dmrg": {
+   "hardware": "cpu",
+   "threads": 4,
+   "budget_h": 0.5,
+   "workloads": [
+    "tfim_dmrg",
+    "xxz_dmrg"
+   ],
+   "arms": [
+    {
+     "lib": "tnkit",
+     "backend": "numpy",
+     "sym": "dense",
+     "env": "main"
+    },
+    {
+     "lib": "tnkit",
+     "backend": "numpy",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "xx_quench"
+     ]
+    },
+    {
+     "lib": "yastn",
+     "backend": "numpy",
+     "sym": "dense",
+     "env": "main"
+    },
+    {
+     "lib": "yastn",
+     "backend": "numpy",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "xx_quench"
+     ]
+    },
+    {
+     "lib": "tenpy",
+     "backend": "numpy",
+     "sym": "dense",
+     "env": "main"
+    },
+    {
+     "lib": "tenpy",
+     "backend": "numpy",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "xx_quench"
+     ]
+    },
+    {
+     "lib": "qtea",
+     "backend": "numpy",
+     "sym": "dense",
+     "env": "qtea"
+    },
+    {
+     "lib": "tnkit",
+     "backend": "numpy",
+     "sym": "dense",
+     "env": "qtea",
+     "workloads": [
+      "tfim_dmrg"
+     ]
+    }
+   ]
+  },
+  "cpu-tdvp": {
+   "hardware": "cpu",
+   "threads": 4,
+   "budget_h": 0.5,
+   "workloads": [
+    "xx_quench"
+   ],
+   "arms": [
+    {
+     "lib": "tnkit",
+     "backend": "numpy",
+     "sym": "dense",
+     "env": "main"
+    },
+    {
+     "lib": "tnkit",
+     "backend": "numpy",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "xx_quench"
+     ]
+    },
+    {
+     "lib": "yastn",
+     "backend": "numpy",
+     "sym": "dense",
+     "env": "main"
+    },
+    {
+     "lib": "yastn",
+     "backend": "numpy",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "xx_quench"
+     ]
+    },
+    {
+     "lib": "tenpy",
+     "backend": "numpy",
+     "sym": "dense",
+     "env": "main"
+    },
+    {
+     "lib": "tenpy",
+     "backend": "numpy",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "xx_quench"
+     ]
+    },
+    {
+     "lib": "qtea",
+     "backend": "numpy",
+     "sym": "dense",
+     "env": "qtea"
+    },
+    {
+     "lib": "tnkit",
+     "backend": "numpy",
+     "sym": "dense",
+     "env": "qtea",
+     "workloads": [
+      "tfim_dmrg"
+     ]
+    }
+   ]
+  },
+  "cpu-ref": {
+   "hardware": "cpu",
+   "threads": 4,
+   "budget_h": 0.5,
+   "workloads": [
+    "xxz_dmrg"
+   ],
+   "chis": {
+    "xxz_dmrg": [
+     16
+    ]
+   },
+   "arms": [
+    {
+     "lib": "tnkit",
+     "backend": "numpy",
+     "sym": "dense",
+     "env": "main"
+    },
+    {
+     "lib": "yastn",
+     "backend": "numpy",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "xx_quench"
+     ]
+    },
+    {
+     "lib": "tenpy",
+     "backend": "numpy",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "xx_quench"
+     ]
+    }
+   ],
+   "reps": 1
+  },
+  "gpu-dmrg": {
+   "hardware": "gpu",
+   "threads": 3,
+   "budget_h": 0.5,
+   "workloads": [
+    "tfim_dmrg",
+    "xxz_dmrg"
+   ],
+   "arms": [
+    {
+     "lib": "tnkit",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "main"
+    },
+    {
+     "lib": "tnkit",
+     "backend": "torch-cuda",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "xx_quench",
+      "tf_collision"
+     ]
+    },
+    {
+     "lib": "yastn",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "main"
+    },
+    {
+     "lib": "yastn",
+     "backend": "torch-cuda",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "xx_quench",
+      "tf_collision"
+     ]
+    },
+    {
+     "lib": "qtea",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "qtea",
+     "workloads": [
+      "tfim_dmrg",
+      "xxz_dmrg",
+      "xx_quench"
+     ]
+    }
+   ]
+  },
+  "gpu-tdvp": {
+   "hardware": "gpu",
+   "threads": 3,
+   "budget_h": 0.5,
+   "workloads": [
+    "xx_quench"
+   ],
+   "arms": [
+    {
+     "lib": "tnkit",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "main"
+    },
+    {
+     "lib": "tnkit",
+     "backend": "torch-cuda",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "xx_quench",
+      "tf_collision"
+     ]
+    },
+    {
+     "lib": "yastn",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "main"
+    },
+    {
+     "lib": "yastn",
+     "backend": "torch-cuda",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "xx_quench",
+      "tf_collision"
+     ]
+    },
+    {
+     "lib": "qtea",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "qtea",
+     "workloads": [
+      "tfim_dmrg",
+      "xxz_dmrg",
+      "xx_quench"
+     ]
+    }
+   ]
+  },
+  "gpu-collision": {
+   "hardware": "gpu",
+   "threads": 3,
+   "budget_h": 0.5,
+   "workloads": [
+    "xx_quench"
+   ],
+   "arms": [
+    {
+     "lib": "tnkit",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "main"
+    },
+    {
+     "lib": "tnkit",
+     "backend": "torch-cuda",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "xx_quench",
+      "tf_collision"
+     ]
+    },
+    {
+     "lib": "yastn",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "main"
+    },
+    {
+     "lib": "yastn",
+     "backend": "torch-cuda",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "xx_quench",
+      "tf_collision"
+     ]
+    }
+   ]
+  }
+ }
+}

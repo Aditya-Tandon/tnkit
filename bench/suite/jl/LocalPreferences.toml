@@ -1,0 +1,10 @@
+# CUDA toolkit pinned to 13.1, the newest the node driver (590.48.01) supports, and the system
+# driver used instead of the bundled forward-compatible one (torch uses the system driver too).
+[CUDA_Runtime_jll]
+version = "13.1"
+
+[CUDA_Compiler_jll]
+version = "13.1"
+
+[CUDA_Driver_jll]
+compat = false

@@ -1,0 +1,26 @@
+cff-version: 1.2.0
+title: "tnkit: a backend-agnostic MPS/DMRG toolkit for GPU-accelerated tensor-network simulations"
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - family-names: Tandon
+    given-names: Aditya
+    email: adityatandon29@gmail.com
+repository-code: "https://github.com/Aditya-Tandon/tnkit"
+abstract: >-
+  tnkit implements DMRG, TDVP, TEBD, iDMRG, VUMPS and excited-state methods for
+  matrix-product states behind a small backend interface, so the same kernel runs
+  on numpy, torch-cpu, CUDA (cuSOLVER, double precision) and Apple MPS. The
+  eigensolver is matrix-free and runs entirely on the device, which removes the
+  host-device round trip per matvec that dominates host-driven DMRG at large bond
+  dimension.
+keywords:
+  - tensor networks
+  - matrix product states
+  - DMRG
+  - quantum many-body
+  - GPU computing
+# Keep these two together and in step with pyproject.toml's `version` on every tag.
+version: 0.2.0rc2
+date-released: 2026-11-02
+license: MIT

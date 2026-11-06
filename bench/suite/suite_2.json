@@ -1,0 +1,966 @@
+{
+ "name": "tnkit-bench-suite-2-tier1",
+ "repeats": 3,
+ "settings": "settings_suite2.json",
+ "spread_rerun": {
+  "ratio": 1.5,
+  "extra": 2
+ },
+ "envs": {
+  "main": {
+   "site": "${TNBENCH_SITE_MAIN}"
+  },
+  "qtea": {
+   "site": "${TNBENCH_SITE_QTEA}"
+  },
+  "julia": {
+   "site": "${TNBENCH_SITE_MAIN}"
+  }
+ },
+ "workloads": {
+  "tf_collision": {
+   "kind": "collision",
+   "N": 160,
+   "chis": [
+    256
+   ],
+   "state": "${TNBENCH_DATA}/state_gt0020.000.npz",
+   "mpo": "${TNBENCH_DATA}/mpo.npz",
+   "dt": 0.05,
+   "steps": 6,
+   "exclude_first": 1,
+   "svd_tol": 1e-08,
+   "sv_tol": 0.0001,
+   "krylov_m": 80,
+   "accuracy": {
+    "metric": "max over qubits of |<n_j> - <n_j>(tnkit, same symmetry, rep 1)| after the steps",
+    "eps": [
+     0.0001
+    ]
+   },
+   "timeout_s": {
+    "gpu": 5400
+   }
+  },
+  "xxz_dmrg": {
+   "kind": "dmrg",
+   "model": "xxz",
+   "N": 64,
+   "J": 1.0,
+   "Jz": 1.0,
+   "chis": [
+    32,
+    64,
+    128,
+    256
+   ],
+   "max_sweeps": 20,
+   "e_tol": 1e-10,
+   "sv_tol": 1e-14,
+   "accuracy": {
+    "metric": "relative energy error against the reference (chi 512, two libraries agreeing)",
+    "eps": [
+     1e-06,
+     1e-08,
+     1e-10
+    ]
+   },
+   "reference": {
+    "chi": 512,
+    "agree_rel": 1e-10
+   },
+   "timeout_s": {
+    "cpu": 3600,
+    "gpu": 3600
+   }
+  },
+  "xx_quench": {
+   "kind": "tdvp",
+   "model": "xx",
+   "N": 32,
+   "J": 1.0,
+   "Jz": 0.0,
+   "dt": 0.05,
+   "T": 8.0,
+   "chis": [
+    32,
+    64,
+    128,
+    256
+   ],
+   "svd_tol": 1e-12,
+   "sv_tol": 1e-06,
+   "accuracy": {
+    "metric": "max over sites of |<S^z_i(T)> - exact| (free fermions)",
+    "eps": [
+     0.01,
+     0.001,
+     0.0001
+    ]
+   },
+   "timeout_s": {
+    "cpu": 3600,
+    "gpu": 3600
+   }
+  },
+  "xxz_ref": {
+   "kind": "dmrg",
+   "model": "xxz",
+   "N": 64,
+   "J": 1.0,
+   "Jz": 1.0,
+   "chis": [
+    512
+   ],
+   "max_sweeps": 30,
+   "e_tol": 1e-12,
+   "sv_tol": 1e-14,
+   "perf": true,
+   "accuracy": {
+    "metric": "none: the chi-512 reference energy of xxz_dmrg and heis_throughput",
+    "eps": []
+   },
+   "timeout_s": {
+    "cpu": 7200
+   }
+  },
+  "heis_throughput": {
+   "kind": "dmrg",
+   "model": "xxz",
+   "N": 64,
+   "J": 1.0,
+   "Jz": 1.0,
+   "chis": [
+    256,
+    512,
+    1024,
+    2048
+   ],
+   "fixed_sweeps": 3,
+   "max_sweeps": 3,
+   "e_tol": 1e-10,
+   "sv_tol": 1e-14,
+   "perf": true,
+   "validity": {
+    "above_rel": 1e-06,
+    "below_rel": 1e-10
+   },
+   "accuracy": {
+    "metric": "none: seconds per sweep (sweeps 2-3) and peak memory; valid if the energy after 3 sweeps is within 1e-6 (relative) above the reference and not 1e-10 below it",
+    "eps": []
+   },
+   "timeout_s": {
+    "gpu": 7200
+   }
+  },
+  "heis_cyl6": {
+   "kind": "dmrg",
+   "model": "heis_cyl",
+   "Lx": 12,
+   "Ly": 6,
+   "N": 72,
+   "J": 1.0,
+   "ramp": [
+    [
+     0.125,
+     2
+    ],
+    [
+     0.25,
+     2
+    ],
+    [
+     0.5,
+     2
+    ]
+   ],
+   "max_sweeps": 10,
+   "e_tol_rel": 1e-08,
+   "energy_scale": 46.0,
+   "sv_tol": 1e-14,
+   "chis": [
+    256,
+    512,
+    1024
+   ],
+   "accuracy": {
+    "metric": "relative energy error against the extrapolated reference (heis_cyl6_ref)",
+    "eps": [
+     0.001,
+     0.0003,
+     0.0001
+    ]
+   },
+   "reference": {
+    "workload": "heis_cyl6_ref",
+    "sigma_rel_max": 3e-05,
+    "void_sigmas": 3
+   },
+   "timeout_s": {
+    "gpu": 7200,
+    "cpu": 7200
+   }
+  },
+  "heis_cyl6_ref": {
+   "kind": "dmrg",
+   "model": "heis_cyl",
+   "Lx": 12,
+   "Ly": 6,
+   "N": 72,
+   "J": 1.0,
+   "ramp": [
+    [
+     0.125,
+     2
+    ],
+    [
+     0.25,
+     2
+    ],
+    [
+     0.5,
+     2
+    ]
+   ],
+   "max_sweeps": 10,
+   "e_tol_rel": 1e-08,
+   "energy_scale": 46.0,
+   "sv_tol": 1e-14,
+   "chis": [
+    384,
+    512,
+    768
+   ],
+   "perf": true,
+   "accuracy": {
+    "metric": "none: E(discarded weight) extrapolation for heis_cyl6",
+    "eps": []
+   },
+   "timeout_s": {
+    "cpu": 14400
+   }
+  },
+  "xx_quench_large": {
+   "kind": "tdvp",
+   "model": "xx",
+   "N": 48,
+   "J": 1.0,
+   "Jz": 0.0,
+   "dt": 0.1,
+   "T": 12.0,
+   "chis": [
+    256,
+    512,
+    1024
+   ],
+   "svd_tol": 1e-12,
+   "sv_tol": 1e-06,
+   "accuracy": {
+    "metric": "max over sites of |<S^z_i(T)> - exact| (free fermions)",
+    "eps": [
+     0.01,
+     0.001,
+     0.0001
+    ]
+   },
+   "timeout_s": {
+    "gpu": 7200
+   }
+  },
+  "tfim_excited": {
+   "kind": "excited",
+   "model": "tfim",
+   "N": 48,
+   "g": 1.0,
+   "nstates": 4,
+   "chis": [
+    16,
+    32,
+    64,
+    128
+   ],
+   "max_sweeps": 20,
+   "e_tol": 1e-10,
+   "sv_tol": 1e-14,
+   "accuracy": {
+    "metric": "max over the 4 lowest levels of |E_k - exact| / |E_0| (free fermions)",
+    "eps": [
+     1e-06,
+     1e-08,
+     1e-10
+    ]
+   },
+   "timeout_s": {
+    "cpu": 3600,
+    "gpu": 3600
+   }
+  }
+ },
+ "pods": {
+  "g3-chain": {
+   "hardware": "gpu",
+   "slice": "3g.47gb",
+   "threads": 3,
+   "budget_h": 12,
+   "memwatch": true,
+   "sampler_check": {
+    "workload": "heis_throughput",
+    "chi": 256
+   },
+   "workloads": [
+    "tf_collision",
+    "heis_throughput"
+   ],
+   "arms": [
+    {
+     "lib": "tnkit",
+     "backend": "torch-cuda",
+     "sym": "u1",
+     "env": "main"
+    },
+    {
+     "lib": "tnkit",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "main",
+     "chis": {
+      "heis_throughput": [
+       256,
+       512,
+       1024
+      ]
+     }
+    },
+    {
+     "lib": "yastn",
+     "backend": "torch-cuda",
+     "sym": "u1",
+     "env": "main"
+    },
+    {
+     "lib": "yastn",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "main",
+     "workloads": [
+      "heis_throughput"
+     ],
+     "chis": {
+      "heis_throughput": [
+       256,
+       512,
+       1024
+      ]
+     }
+    },
+    {
+     "lib": "qtea",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "qtea",
+     "workloads": [
+      "heis_throughput"
+     ],
+     "chis": {
+      "heis_throughput": [
+       256,
+       512,
+       1024
+      ]
+     }
+    },
+    {
+     "lib": "itensor",
+     "backend": "julia-cuda",
+     "sym": "dense",
+     "env": "julia",
+     "workloads": [
+      "heis_throughput"
+     ],
+     "chis": {
+      "heis_throughput": [
+       256,
+       512,
+       1024
+      ]
+     },
+     "gate": "TNBENCH_JULIA_OK"
+    },
+    {
+     "lib": "itensor",
+     "backend": "julia-cuda",
+     "sym": "u1",
+     "env": "julia",
+     "workloads": [
+      "heis_throughput"
+     ],
+     "gate": "TNBENCH_JULIA_QN_CUDA"
+    }
+   ]
+  },
+  "g3-cyl": {
+   "hardware": "gpu",
+   "slice": "3g.47gb",
+   "threads": 3,
+   "budget_h": 13,
+   "memwatch": true,
+   "sampler_check": {
+    "workload": "heis_cyl6",
+    "chi": 256
+   },
+   "workloads": [
+    "heis_cyl6"
+   ],
+   "chis": {
+    "heis_cyl6": [
+     256,
+     512,
+     1024
+    ]
+   },
+   "arms": [
+    {
+     "lib": "tnkit",
+     "backend": "torch-cuda",
+     "sym": "u1",
+     "env": "main"
+    },
+    {
+     "lib": "tnkit",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "main",
+     "chis": {
+      "heis_cyl6": [
+       256,
+       512
+      ]
+     }
+    },
+    {
+     "lib": "yastn",
+     "backend": "torch-cuda",
+     "sym": "u1",
+     "env": "main"
+    },
+    {
+     "lib": "yastn",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "main",
+     "chis": {
+      "heis_cyl6": [
+       256,
+       512
+      ]
+     }
+    },
+    {
+     "lib": "itensor",
+     "backend": "julia-cuda",
+     "sym": "dense",
+     "env": "julia",
+     "chis": {
+      "heis_cyl6": [
+       256,
+       512
+      ]
+     },
+     "gate": "TNBENCH_JULIA_OK"
+    },
+    {
+     "lib": "itensor",
+     "backend": "julia-cuda",
+     "sym": "u1",
+     "env": "julia",
+     "gate": "TNBENCH_JULIA_QN_CUDA"
+    }
+   ]
+  },
+  "g3-tdvp": {
+   "hardware": "gpu",
+   "slice": "3g.47gb",
+   "threads": 3,
+   "budget_h": 13,
+   "memwatch": true,
+   "sampler_check": {
+    "workload": "xx_quench_large",
+    "chi": 256
+   },
+   "workloads": [
+    "xx_quench_large"
+   ],
+   "arms": [
+    {
+     "lib": "tnkit",
+     "backend": "torch-cuda",
+     "sym": "u1",
+     "env": "main"
+    },
+    {
+     "lib": "tnkit",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "main"
+    },
+    {
+     "lib": "yastn",
+     "backend": "torch-cuda",
+     "sym": "u1",
+     "env": "main",
+     "chis": {
+      "xx_quench_large": [
+       256,
+       512
+      ]
+     }
+    },
+    {
+     "lib": "yastn",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "main"
+    },
+    {
+     "lib": "qtea",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "qtea",
+     "chis": {
+      "xx_quench_large": [
+       256,
+       512
+      ]
+     }
+    },
+    {
+     "lib": "itensor",
+     "backend": "julia-cuda",
+     "sym": "dense",
+     "env": "julia",
+     "gate": "TNBENCH_JULIA_OK"
+    },
+    {
+     "lib": "itensor",
+     "backend": "julia-cuda",
+     "sym": "u1",
+     "env": "julia",
+     "gate": "TNBENCH_JULIA_QN_CUDA"
+    }
+   ]
+  },
+  "g1-s2": {
+   "hardware": "gpu",
+   "slice": "1g.12gb",
+   "threads": 3,
+   "budget_h": 12,
+   "memwatch": true,
+   "sampler_check": {
+    "workload": "heis_throughput",
+    "chi": 256
+   },
+   "workloads": [
+    "tfim_excited",
+    "xxz_dmrg",
+    "xx_quench",
+    "heis_throughput"
+   ],
+   "chis": {
+    "heis_throughput": [
+     256,
+     512,
+     1024
+    ]
+   },
+   "arms": [
+    {
+     "lib": "tnkit",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "main",
+     "workloads": [
+      "tfim_excited",
+      "xxz_dmrg",
+      "xx_quench",
+      "heis_throughput"
+     ],
+     "chis": {
+      "heis_throughput": [
+       256,
+       512
+      ]
+     }
+    },
+    {
+     "lib": "tnkit",
+     "backend": "torch-cuda",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "heis_throughput"
+     ]
+    },
+    {
+     "lib": "yastn",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "main",
+     "workloads": [
+      "tfim_excited",
+      "heis_throughput"
+     ],
+     "chis": {
+      "heis_throughput": [
+       256,
+       512
+      ]
+     }
+    },
+    {
+     "lib": "yastn",
+     "backend": "torch-cuda",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "heis_throughput"
+     ]
+    },
+    {
+     "lib": "qtea",
+     "backend": "torch-cuda",
+     "sym": "dense",
+     "env": "qtea",
+     "workloads": [
+      "heis_throughput"
+     ],
+     "chis": {
+      "heis_throughput": [
+       256,
+       512
+      ]
+     }
+    },
+    {
+     "lib": "itensor",
+     "backend": "julia-cuda",
+     "sym": "dense",
+     "env": "julia",
+     "workloads": [
+      "tfim_excited",
+      "xxz_dmrg",
+      "xx_quench",
+      "heis_throughput"
+     ],
+     "chis": {
+      "heis_throughput": [
+       256,
+       512
+      ]
+     },
+     "gate": "TNBENCH_JULIA_OK"
+    },
+    {
+     "lib": "itensor",
+     "backend": "julia-cuda",
+     "sym": "u1",
+     "env": "julia",
+     "workloads": [
+      "xxz_dmrg",
+      "xx_quench",
+      "heis_throughput"
+     ],
+     "gate": "TNBENCH_JULIA_QN_CUDA"
+    }
+   ]
+  },
+  "cpu-s2a": {
+   "hardware": "cpu",
+   "threads": 4,
+   "budget_h": 10,
+   "memwatch": true,
+   "workloads": [
+    "xxz_ref",
+    "xxz_dmrg",
+    "tfim_excited",
+    "xx_quench"
+   ],
+   "reps_by_workload": {
+    "xxz_ref": 1
+   },
+   "arms": [
+    {
+     "lib": "block2",
+     "backend": "cpu",
+     "sym": "su2",
+     "env": "main",
+     "workloads": [
+      "xxz_ref",
+      "xxz_dmrg"
+     ]
+    },
+    {
+     "lib": "tnkit",
+     "backend": "numpy",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_ref",
+      "xxz_dmrg"
+     ]
+    },
+    {
+     "lib": "tnkit",
+     "backend": "numpy",
+     "sym": "dense",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "xx_quench",
+      "tfim_excited"
+     ]
+    },
+    {
+     "lib": "block2",
+     "backend": "cpu",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg"
+     ]
+    },
+    {
+     "lib": "itensor",
+     "backend": "julia-cpu",
+     "sym": "dense",
+     "env": "julia",
+     "workloads": [
+      "xxz_dmrg",
+      "xx_quench",
+      "tfim_excited"
+     ],
+     "gate": "TNBENCH_JULIA_OK"
+    },
+    {
+     "lib": "itensor",
+     "backend": "julia-cpu",
+     "sym": "u1",
+     "env": "julia",
+     "workloads": [
+      "xxz_dmrg",
+      "xx_quench"
+     ],
+     "gate": "TNBENCH_JULIA_OK"
+    },
+    {
+     "lib": "yastn",
+     "backend": "numpy",
+     "sym": "dense",
+     "env": "main",
+     "workloads": [
+      "tfim_excited"
+     ]
+    },
+    {
+     "lib": "tenpy",
+     "backend": "numpy",
+     "sym": "dense",
+     "env": "main",
+     "workloads": [
+      "tfim_excited"
+     ]
+    }
+   ]
+  },
+  "cpu-s2b": {
+   "hardware": "cpu",
+   "threads": 16,
+   "budget_h": 18,
+   "memwatch": true,
+   "workloads": [
+    "heis_cyl6_ref",
+    "heis_cyl6",
+    "xxz_dmrg"
+   ],
+   "reps_by_workload": {
+    "heis_cyl6_ref": 1
+   },
+   "chis": {
+    "heis_cyl6": [
+     256,
+     512
+    ],
+    "xxz_dmrg": [
+     256
+    ]
+   },
+   "arms": [
+    {
+     "lib": "block2",
+     "backend": "cpu",
+     "sym": "su2",
+     "env": "main",
+     "workloads": [
+      "heis_cyl6_ref",
+      "heis_cyl6",
+      "xxz_dmrg"
+     ],
+     "chis": {
+      "heis_cyl6": [
+       128,
+       256,
+       512
+      ]
+     }
+    },
+    {
+     "lib": "block2",
+     "backend": "cpu",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "heis_cyl6",
+      "xxz_dmrg"
+     ]
+    },
+    {
+     "lib": "tnkit",
+     "backend": "numpy",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "heis_cyl6",
+      "xxz_dmrg"
+     ]
+    },
+    {
+     "lib": "yastn",
+     "backend": "numpy",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "heis_cyl6",
+      "xxz_dmrg"
+     ]
+    },
+    {
+     "lib": "tenpy",
+     "backend": "numpy",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "heis_cyl6",
+      "xxz_dmrg"
+     ]
+    },
+    {
+     "lib": "itensor",
+     "backend": "julia-cpu",
+     "sym": "u1",
+     "env": "julia",
+     "workloads": [
+      "heis_cyl6",
+      "xxz_dmrg"
+     ],
+     "gate": "TNBENCH_JULIA_OK"
+    },
+    {
+     "lib": "block2",
+     "backend": "cpu",
+     "sym": "su2",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "heis_cyl6"
+     ],
+     "chis": {
+      "heis_cyl6": [
+       256
+      ]
+     },
+     "threads": 4
+    },
+    {
+     "lib": "block2",
+     "backend": "cpu",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "heis_cyl6"
+     ],
+     "chis": {
+      "heis_cyl6": [
+       256
+      ]
+     },
+     "threads": 4
+    },
+    {
+     "lib": "tnkit",
+     "backend": "numpy",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "heis_cyl6"
+     ],
+     "chis": {
+      "heis_cyl6": [
+       256
+      ]
+     },
+     "threads": 4
+    },
+    {
+     "lib": "yastn",
+     "backend": "numpy",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "heis_cyl6"
+     ],
+     "chis": {
+      "heis_cyl6": [
+       256
+      ]
+     },
+     "threads": 4
+    },
+    {
+     "lib": "tenpy",
+     "backend": "numpy",
+     "sym": "u1",
+     "env": "main",
+     "workloads": [
+      "xxz_dmrg",
+      "heis_cyl6"
+     ],
+     "chis": {
+      "heis_cyl6": [
+       256
+      ]
+     },
+     "threads": 4
+    },
+    {
+     "lib": "itensor",
+     "backend": "julia-cpu",
+     "sym": "u1",
+     "env": "julia",
+     "workloads": [
+      "xxz_dmrg",
+      "heis_cyl6"
+     ],
+     "gate": "TNBENCH_JULIA_OK",
+     "chis": {
+      "heis_cyl6": [
+       256
+      ]
+     },
+     "threads": 4
+    }
+   ]
+  }
+ }
+}

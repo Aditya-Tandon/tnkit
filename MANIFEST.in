@@ -1,0 +1,16 @@
+# The source distribution is the library and the files that describe it;
+# tests/test_packaging.py checks a built sdist and wheel against this.
+include LICENSE
+include README.md
+include CHANGELOG.md
+include BENCHMARKS.md
+include CITATION.cff
+include pyproject.toml
+
+recursive-include tnkit *.py
+
+prune bench
+prune tests
+prune .github
+global-exclude *.pyc
+global-exclude __pycache__

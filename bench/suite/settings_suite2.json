@@ -1,0 +1,21 @@
+{
+ "_about": "Library settings of suite 2, in one place. <library> -> <run kind (dmrg, excited, tdvp, collision) or workload name> -> settings; a workload entry overrides its kind's entry. Each runner's docstring lists the keys it takes and rejects any other. Ground-state DMRG runs each library's tuned settings: tnkit with expand 0; YASTN with two '2site' sweeps, then '1site'; Quantum TEA with statics_method 6 (two-tensor update). Every library ends the last DMRG stage on one relative stop, |dE| < 1e-10 |E|: tnkit, YASTN and ITensor take rtol; TeNPy's max_E_err is relative already; block2's stop is absolute only, so it stops at rtol |e_ref|, with e_ref the chain's confirmed chi-512 reference energy. Workloads with a fixed stop of their own (xxz_ref: 1e-12 absolute; the cylinder: 1e-8 x 46 absolute) set rtol 0. The fixed-sweep throughput keeps YASTN on two-site sweeps, so that every library times the same update. Excited states, TDVP and the collision run each library's documented defaults. Empty means those defaults. Every run records this file's sha256 and the settings and stop it used.",
+ "tnkit": {"dmrg": {"rtol": 1e-10, "expand": 0}, "excited": {}, "tdvp": {}, "collision": {},
+           "xxz_ref": {"rtol": 0.0}, "heis_cyl6": {"rtol": 0.0}},
+ "yastn": {"dmrg": {"two_site_sweeps": 2, "rtol": 1e-10}, "excited": {}, "tdvp": {}, "collision": {},
+           "xxz_ref": {"rtol": 0.0}, "heis_cyl6": {"rtol": 0.0}, "heis_throughput": {"two_site_sweeps": 0}},
+ "tenpy": {"dmrg": {}, "excited": {}, "tdvp": {}},
+ "qtea": {"dmrg": {"statics_method": 6}, "tdvp": {}},
+ "block2": {
+  "dmrg": {"noises": [1e-05, 1e-05, 1e-05, 1e-05, 1e-06, 1e-06, 0.0], "thrds": [1e-10], "stack_mem_gb": 4},
+  "xxz_dmrg": {"rtol": 1e-10, "e_ref": -28.17542485974319},
+  "heis_cyl6": {"stack_mem_gb": 40},
+  "heis_cyl6_ref": {"stack_mem_gb": 40}
+ },
+ "itensor": {
+  "dmrg": {"noise": [1e-06, 1e-07, 1e-08, 0.0], "cutoff": 1e-14, "eigsolve_krylovdim": 3, "eigsolve_maxiter": 1, "threading": "auto", "rtol": 1e-10},
+  "xxz_ref": {"rtol": 0.0}, "heis_cyl6": {"rtol": 0.0},
+  "excited": {"noise": [1e-06, 1e-07, 1e-08, 0.0], "cutoff": 1e-14, "eigsolve_krylovdim": 3, "eigsolve_maxiter": 1, "weight": 20.0, "threading": "auto"},
+  "tdvp": {"threading": "auto"}
+ }
+}

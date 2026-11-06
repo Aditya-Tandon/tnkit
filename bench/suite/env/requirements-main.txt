@@ -1,0 +1,6 @@
+# Added on top of the tnkit image (Python 3.11.15, numpy 2.4.6, scipy 1.17.1, torch 2.5.1+cu124),
+# installed with --no-deps into a target directory. YASTN is not on PyPI: build_wheelhouse.sh builds
+# its wheel from the 1.6.1 tag commit and records the wheel's sha256.
+tqdm==4.70.1 --hash=sha256:c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73
+h5py==3.16.0 --hash=sha256:fb1720028d99040792bb2fb31facb8da44a6f29df7697e0b84f0d79aff2e9bd3
+physics-tenpy==1.1.1 --hash=sha256:b839ce558763dc81d107c607ffeddcd7f08a6683bdeac64c2fdf92fe0977e716

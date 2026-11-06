@@ -1,0 +1,4 @@
+# Suite 2, added to the main environment: block2 (needs numpy, scipy, psutil; numpy and scipy are
+# the image's; its MKL runtime is requirements-s2-mkl.txt). Linux wheels, CPython 3.11, sha256 from PyPI.
+block2==0.5.4 --hash=sha256:96161afd8865dcd972dbebb5ae86b9734196e806c1c507840518f5d1e326d4a7
+psutil==7.1.3 --hash=sha256:3bb428f9f05c1225a558f53e30ccbad9930b11c3fc206836242de1091d3e7dd3
