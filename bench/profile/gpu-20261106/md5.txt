@@ -1,0 +1,9 @@
+fd7999f52007e7cde5f7b9ae896614c2  ./fused_dmrg/compare.json
+09b880ad1bb1024372cda48d41742928  ./fused_dmrg/fused.json
+8020b9c747122bc69a4b16251106d718  ./fused_dmrg/nvidia_smi_L.txt
+24e7a846cfc0facf69466c285aa7925b  ./fused_dmrg/run.log
+65e7f6c0074c0a85537cc49669f3d981  ./fused_dmrg/unfused.json
+5ce275c34be7ad8b90aca7de7ff5adea  ./matvec/env.txt
+58a01db1b9ba01f0b0d2eadbbcfa36b7  ./matvec/gpu_matvec.json
+e1fdd267f4089ede81f3c924f2ade2d3  ./matvec/nvidia_smi_L.txt
+1e3ae3ab62e9fadd21eb4fa16c57e8d3  ./matvec/run.log

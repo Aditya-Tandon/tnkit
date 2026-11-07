@@ -1,0 +1,2 @@
+GPU 0: NVIDIA H100 NVL (UUID: GPU-db2c7397-9814-50d5-28a4-a691fe6fb481)
+  MIG 1g.12gb     Device  0: (UUID: MIG-cdd2f45b-ad02-5df6-8946-17ec83b9a375)
