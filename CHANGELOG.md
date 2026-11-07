@@ -5,6 +5,14 @@ in Python's form for pre-releases (`0.2.0rc1`).
 
 ## [Unreleased]
 
+### Changed
+
+- Dense two-site DMRG applies the effective Hamiltonian with a fused, transpose-free matvec
+  (one GEMM per environment and one batched GEMM for the MPO pair). Results agree with the
+  previous matvec to round-off but are not bit-identical. Measured per sweep: 1.3x faster on
+  CPU (cylinder, 2 threads); on an H100 MIG 1g slice, 1.29-1.36x on a 6x8 cylinder and
+  1.03-1.04x on a 64-site chain. The matvec alone is 1.46-2.34x faster on the GPU.
+
 ## [0.2.0rc2] — 2026-11-05
 
 No numerical change: the library code is 0.2.0rc1's apart from comments, docstrings and the

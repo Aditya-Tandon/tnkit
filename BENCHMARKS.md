@@ -84,6 +84,37 @@ SU(2) at χ 128 multiplets and 16 threads.*
 - **Ising levels on 4 CPU cores** are a tie with ITensor at $10^{-8}$ (5.57 s against 5.45 s,
   overlapping repeat ranges); tnkit is ahead at $10^{-10}$ (11.1 s against 14.6 s).
 
+## The fused two-site matvec (dense DMRG)
+
+Since 0.2.0rc3, dense two-site DMRG applies the effective Hamiltonian with a fused,
+transpose-free matvec: one GEMM for the left environment, one batched GEMM for the two MPO
+tensors together, one GEMM for the right environment. Results equal the previous matvec to
+round-off, not bit for bit. Measured on one NVIDIA H100 NVL MIG 1g.12gb slice, fp64
+(scripts and raw outputs in `bench/profile/`):
+
+| MPO (width) | χ | matvec before (ms) | fused (ms) | speed-up | max relative difference |
+|---|---|---|---|---|---|
+| Heisenberg cylinder, 6 rows (20) | 256 | 2.51 | 1.31 | 1.91× | 2.0e-15 |
+| | 512 | 13.20 | 8.35 | 1.58× | 7.3e-15 |
+| | 1024 | 99.27 | 63.23 | 1.57× | 1.3e-14 |
+| XXZ chain (5) | 256 | 0.75 | 0.32 | 2.34× | 1.5e-15 |
+| | 512 | 3.70 | 2.11 | 1.76× | 4.1e-15 |
+| | 1024 | 22.38 | 15.31 | 1.46× | 7.1e-15 |
+
+Whole DMRG runs, 8 sweeps at fixed χ, before and after the change:
+
+| system | χ | energy per site | final relative difference | median sweep before → after (s) | speed-up |
+|---|---|---|---|---|---|
+| Heisenberg 6 × 8 cylinder | 128 | −0.525692671960 | 1.3e-15 | 4.30 → 3.34 | 1.29× |
+| | 256 | −0.527150993088 | 7.2e-15 | 14.62 → 10.75 | 1.36× |
+| Heisenberg chain, N 64 | 128 | −0.440241013432 | 3.0e-15 | 2.49 → 2.40 | 1.04× |
+| | 256 | −0.440241013433 | 1.0e-14 | 5.39 → 5.22 | 1.03× |
+
+The two versions agree at every sweep (largest per-sweep difference 1.2e-14). The gain per sweep
+is smaller than the matvec's: on the chain the eigensolver and the SVD dominate a sweep. The
+cylinder energies are not converged ground states after 8 sweeps; both versions follow the same
+path, which is what the check tests.
+
 ## Caveats
 
 - **ITensor's dense CUDA code** spends 37–96 s on its first sweep in each timed run, a one-off
