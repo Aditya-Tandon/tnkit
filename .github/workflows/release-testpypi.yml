@@ -1,0 +1,47 @@
+name: release-testpypi
+
+# Publishes a tagged version to TestPyPI through trusted publishing (no stored secrets): the
+# shared release-build.yml builds and checks the distributions, then the publish job uploads
+# them from the `testpypi` environment.
+#
+# Run it by hand from the release tag (see RELEASING.md):
+#   gh workflow run release-testpypi.yml --ref v<version> -f version=<version>
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish; must equal pyproject.toml's and the tag's"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-testpypi
+  cancel-in-progress: false
+
+jobs:
+  build:
+    uses: ./.github/workflows/release-build.yml
+    with:
+      version: ${{ inputs.version }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/tnkit
+    permissions:
+      id-token: write          # trusted publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/

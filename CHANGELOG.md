@@ -5,6 +5,8 @@ in Python's form for pre-releases (`0.2.0rc1`).
 
 ## [Unreleased]
 
+## [0.2.0rc4] — 2026-11-09
+
 ### Changed
 
 - Dense two-site DMRG applies the effective Hamiltonian with a fused, transpose-free matvec
