@@ -9,8 +9,7 @@ iDMRG and VUMPS, and excited states.
 The same code runs on numpy and on PyTorch, on the CPU or on a GPU; one argument chooses the
 backend. On NVIDIA GPUs the arithmetic is double precision by default. tnkit is alpha software.
 
-Documentation: <https://tnkit.readthedocs.io> (placeholder address: the site is published when
-the repository becomes public).
+Documentation: <https://aditya-tandon.github.io/tnkit/>
 
 ## Install
 
