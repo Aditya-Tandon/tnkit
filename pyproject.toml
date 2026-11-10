@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "tnkit"
 license = "MIT"
 license-files = ["LICENSE"]
-version = "0.2.0rc4"
+version = "0.2.0"
 description = "Matrix-product-state library with DMRG and TDVP on numpy and PyTorch backends, on CPUs and GPUs"
 readme = "README.md"
 requires-python = ">=3.11"

@@ -5,6 +5,14 @@ in Python's form for pre-releases (`0.2.0rc1`).
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-11-10
+
+First release on PyPI. The library code is 0.2.0rc4's.
+
+### Changed
+
+- README and install guide: install from PyPI with `pip install tnkit`.
+
 ## [0.2.0rc4] — 2026-11-09
 
 ### Changed

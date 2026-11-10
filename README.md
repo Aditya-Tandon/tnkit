@@ -17,21 +17,21 @@ the repository becomes public).
 tnkit needs Python 3.11 or later. The core depends only on numpy and scipy.
 
 ```bash
-git clone https://github.com/Aditya-Tandon/tnkit.git
-cd tnkit
-pip install .
+pip install tnkit
 ```
 
 For the PyTorch backends, install an extra:
 
 ```bash
-pip install ".[torch]"     # CPU, or Apple silicon
-pip install ".[cuda]"      # NVIDIA GPU on Linux: PyPI's torch wheel is a CUDA build
+pip install "tnkit[torch]"     # CPU, or Apple silicon
+pip install "tnkit[cuda]"      # NVIDIA GPU on Linux: PyPI's torch wheel is a CUDA build
 ```
+
+To install from source, clone the repository and run `pip install .` in it.
 
 On Linux both extras install the same PyPI wheel, which bundles the CUDA libraries (a large
 download). On Windows, or to choose a CUDA version or a CPU-only build, install torch first with
-the selector at <https://pytorch.org>, then `pip install .`.
+the selector at <https://pytorch.org>, then `pip install tnkit`.
 
 `import tnkit` does not import PyTorch; a torch backend loads it on first use.
 
