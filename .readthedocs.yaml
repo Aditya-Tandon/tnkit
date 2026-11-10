@@ -14,4 +14,4 @@ python:
 
 sphinx:
   configuration: docs/conf.py
-  fail_on_warning: false   # set to true once a build is confirmed warning-free
+  fail_on_warning: true
