@@ -3,6 +3,12 @@
 tnkit needs Python 3.11 or later. The core depends only on numpy and scipy.
 
 ```bash
+pip install tnkit
+```
+
+For development, install from a clone instead:
+
+```bash
 git clone https://github.com/Aditya-Tandon/tnkit.git
 cd tnkit
 pip install -e .

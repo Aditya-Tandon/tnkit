@@ -21,6 +21,6 @@ keywords:
   - quantum many-body
   - GPU computing
 # Keep these two together and in step with pyproject.toml's `version` on every tag.
-version: 0.2.0rc4
-date-released: 2026-11-09
+version: 0.2.0
+date-released: 2026-11-10
 license: MIT
