@@ -42,7 +42,7 @@ docs = [
 ]
 
 [project.urls]
-Documentation = "https://aditya-tandon.github.io/tnkit/"
+Documentation = "https://tnkit.readthedocs.io"
 Repository = "https://github.com/Aditya-Tandon/tnkit"
 
 [tool.setuptools]
