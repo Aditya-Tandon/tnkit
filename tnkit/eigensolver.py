@@ -24,6 +24,7 @@ import time
 import numpy as np
 
 from . import block_lanczos
+from .blocks import BlockTensor
 
 try:
     from scipy.linalg import eigvalsh_tridiagonal, eigh_tridiagonal
@@ -360,7 +361,7 @@ def lanczos_expm(matvec, v, tau, ops, m=30, tol=1e-12, adaptive=None, info=None,
     For a block tensor `v`, `block_lanczos.lanczos_expm` runs instead unless it is switched off: the
     same result, bit for bit, for less host work.
     """
-    if getattr(v, "is_block", False) and block_lanczos.enabled():
+    if isinstance(v, BlockTensor) and block_lanczos.enabled():
         return block_lanczos.lanczos_expm(matvec, v, tau, ops, m=m, tol=tol, adaptive=adaptive,
                                           info=info, est_ref_j=est_ref_j)
     beta0 = ops.to_scalar(ops.norm(v)).real

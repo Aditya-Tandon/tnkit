@@ -88,7 +88,7 @@ def clear_stats() -> None:
 
 def wrap(fn: Callable[[BlockTensor], BlockTensor], x: BlockTensor):
     """`fn`, or a `MatvecGraph` around it when graphs are on and `x` is on a CUDA device."""
-    if not _ON or not getattr(x.data, "is_cuda", False):
+    if not _ON or not isinstance(x, BlockTensor) or not getattr(x.data, "is_cuda", False):
         return fn
     return MatvecGraph(fn)
 

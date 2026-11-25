@@ -34,6 +34,7 @@ from .mps import MPS, MPSLike, Tensor
 from . import _options
 from ._dmrg import (apply_two_site, apply_one_site, apply_zero_site, update_left_env,
                    update_right_env, right_canonicalize, _truncate, _cut, _edge_envs)
+from ._sparse import bond_states, linalg_of
 
 
 def _is_block(x) -> bool:
@@ -52,15 +53,22 @@ def _krylov(fn, x, tau, be, fm, info, krylov_m):
 
 
 def _check_blocks(M, mpo, be, fast_expm=None, graph="off", trunc="svd"):
-    """Block tensors need a block MPS, a block MPO and a `BlockBackend`, truncate with 'svd', and
-    run the adaptive Krylov solver eagerly: no frozen schedule and no step graphs (`block_graph`
-    may replay their matvecs)."""
+    """Block tensors need a block MPS, a block MPO and a `BlockBackend` (symmetric tensors: a
+    symmetric MPS and MPO and a `SymmetricBackend`), truncate with 'svd', and run the adaptive
+    Krylov solver eagerly: no frozen schedule and no step graphs (`block_graph` may replay the
+    matvecs of block tensors)."""
     if not (_is_block(M[0]) or _is_block(mpo[0])):
         return
     from .block_backend import BlockBackend
-    if not (_is_block(M[0]) and _is_block(mpo[0]) and isinstance(be, BlockBackend)):
+    from .symmetric_backend import SymmetricBackend
+    from .symmetric_tensor import SymmetricTensor
+    kinds = {isinstance(M[0], SymmetricTensor), isinstance(mpo[0], SymmetricTensor)}
+    adaptor = SymmetricBackend if True in kinds else BlockBackend
+    if not (_is_block(M[0]) and _is_block(mpo[0]) and len(kinds) == 1
+            and isinstance(be, adaptor)):
         raise ValueError("block tensors need a block MPS, a block MPO and "
-                         "backend=BlockBackend(dense)")
+                         "backend=BlockBackend(dense); symmetric tensors a symmetric MPS and MPO "
+                         "and backend=SymmetricBackend(dense)")
     if fast_expm is not None or graph != "off":
         raise ValueError("block tensors need fast_expm=None and no CUDA graphs")
     if trunc != "svd":
@@ -499,12 +507,11 @@ def _svd_cut(mat, chi, be, trunc="svd", svd_tol=0.0, degenerate_tol=0.0, rng=Non
     flag."""
     tot = float(be.to_numpy(be.norm(mat))) ** 2 or 1.0      # = sum(sigma^2), pre-truncation
     if _is_block(mat):
-        from .blocks import truncated_svd
         if trunc != "svd":
             raise ValueError(f"block tensors truncate with trunc='svd' only, got {trunc!r}")
         info = {}
-        U, S, Vh, disc = truncated_svd(mat, chi, svd_tol=svd_tol, degenerate_tol=degenerate_tol,
-                                       info=info)
+        U, S, Vh, disc = linalg_of(mat).truncated_svd(mat, chi, svd_tol=svd_tol,
+                                                      degenerate_tol=degenerate_tol, info=info)
         return U, S, Vh, disc / tot, info["pinned"]
     whole = degenerate_tol > 0                              # `_cut` needs the whole spectrum
     rank = min(int(x) for x in mat.shape) if whole else chi
@@ -678,10 +685,11 @@ def tdvp2_evolve(mps: MPSLike, mpo: Any, chi: int, dt: float, n_steps: int,
     profile : optional dict. When given (or when step_callback is), it is filled with per-step
         diagnostics — profile['steps'] = list of dicts, one per step:
         {step, t, dt, max_chi, disc, expm_s, trunc_s, env_s, krylov_max, krylov_cap_hits}.
-        max_chi is the largest bond after the step (the entanglement-driven growth), disc the
-        summed relative discarded weight (the validity-window signal), krylov_max the largest
-        Krylov dimension of the step's solves, krylov_cap_hits how many adaptive solves stopped
-        at the `krylov_m` cap without meeting the solver tolerance (0 on fixed schedules).
+        max_chi is the largest bond after the step (the entanglement-driven growth; multiplets
+        on symmetric tensors, as `chi` counts them), disc the summed relative discarded weight
+        (the validity-window signal), krylov_max the largest Krylov dimension of the step's
+        solves, krylov_cap_hits how many adaptive solves stopped at the `krylov_m` cap without
+        meeting the solver tolerance (0 on fixed schedules).
         Adds GPU syncs, so pass it only when profiling.
     step_callback : optional fn(step_dict, obs_or_None) called at the END of every step — lets the
         caller flush each row to disk as it is produced, so a walltime kill preserves all completed
@@ -776,7 +784,7 @@ def _tdvp2(mps: MPSLike, mpo: Any, chi: int, dt: float, n_steps: int,
         state["t"] += h
         step_dict = None
         if do_prof:
-            max_chi = max(int(m.shape[2]) for m in M[:-1])
+            max_chi = max(bond_states(m, 2) for m in M[:-1])
             step_dict = {"step": state["step"], "t": state["t"], "dt": h, "max_chi": max_chi,
                          "disc": pstep["disc"], "expm_s": pstep["expm"],
                          "trunc_s": pstep["trunc"], "env_s": pstep["env"],
@@ -887,7 +895,6 @@ def _evolve_one_site_left_cut(M, L, R, mpo, i, dt, chi, be, meter=None, fm=None,
 def _one_site_blocks(M, L, R, mpo, i, dt, be, meter, fm, krylov_m, direction):
     """`_evolve_one_site_right`/`_left` on block tensors: QR per block, bonds keep their
     sectors (a sector can only shrink, where a block has fewer rows than columns)."""
-    from .blocks import qr
     _mi = meter.info if meter is not None else None
 
     def step(fn, x, tau):
@@ -901,7 +908,7 @@ def _one_site_blocks(M, L, R, mpo, i, dt, be, meter, fm, krylov_m, direction):
         if i == len(M) - 1:
             return
         f, rec = fuse(M[i], ((0, 1), (2,)), be)
-        Q, C = qr(f)
+        Q, C = linalg_of(f).qr(f)
         M[i], C = split(Q, rec, be, legs=(0,)), split(C, rec, be, legs=(1,))
         L[i + 1] = update_left_env(L[i], M[i], mpo[i], be)
         C = step(lambda x: apply_zero_site(x, L[i + 1], R[i + 1], be), C, +1j * dt / 2.0)
@@ -910,7 +917,7 @@ def _one_site_blocks(M, L, R, mpo, i, dt, be, meter, fm, krylov_m, direction):
         if i == 0:
             return
         f, rec = fuse(M[i], ((0,), (1, 2)), be)
-        C, Q = qr(f, right=True)
+        C, Q = linalg_of(f).qr(f, right=True)
         M[i], C = split(Q, rec, be, legs=(1,)), split(C, rec, be, legs=(0,))
         R[i] = update_right_env(R[i + 1], M[i], mpo[i], be)
         C = step(lambda x: apply_zero_site(x, L[i], R[i], be), C, +1j * dt / 2.0)

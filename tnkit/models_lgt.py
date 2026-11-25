@@ -107,6 +107,13 @@ def site_charge(z) -> np.ndarray:
     return 0.5 * (z + _stag(len(z)))
 
 
+def schwinger_charges(N: int) -> np.ndarray:
+    """q_n of each basis state, shape (N, 2), integers; column 0 is Z = +1. The `charges`
+    argument of `tnkit.thermal.infinite_temperature_state`."""
+    s = _stag(N).astype(int)
+    return np.stack([(1 + s) // 2, (s - 1) // 2], axis=1)
+
+
 def particle_number(z) -> np.ndarray:
     """(1 + (-1)^n z_n)/2 in [0, 1], shape (N,). Its mean is the particle density."""
     z = np.asarray(z, dtype=float)

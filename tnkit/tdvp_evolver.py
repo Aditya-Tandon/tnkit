@@ -49,6 +49,7 @@ from .backend import get_backend
 from .mps import MPS, MPSLike
 from . import invariants
 from . import linalg as tl
+from ._sparse import bond_states
 from .expansion import expand_right
 from .tdvp import (FAST_EXPM_RECAL, TDVPOptions, _check_blocks, _check_degenerate_tol,
                    _edge_envs, _is_block, _evolve_one_site_left, _evolve_one_site_left_cut,
@@ -95,7 +96,8 @@ class TDVPEvolver:
         if o.expand and (o.L0 is not None or o.RN is not None or o.graph == "on"
                          or o.cuda_graph is not None or o.prefix_graph is not None):
             raise ValueError("expand needs open boundaries and eager one-site steps (no graphs)")
-        self.o, self.dt = o, float(dt)
+        # A complex dt (-i dbeta/2) runs imaginary time; see `tnkit.thermal.cool`.
+        self.o, self.dt = o, (complex(dt) if isinstance(dt, complex) else float(dt))
         self.be = be = get_backend(o.backend)
         _check_blocks(mps, mpo, be, o.fast_expm,
                       "off" if (o.cuda_graph, o.prefix_graph) == (None, None) else "on", o.trunc)
@@ -265,7 +267,7 @@ class TDVPEvolver:
                 pin[i - 1] = _evolve_two_site(M, L, R, W, i - 1, self.cap, h, be, "left", pstep,
                                               **tr)
             elif not (i == 0 and N > 1 and two[0]):
-                if cut is not None and i > 0 and int(M[i].shape[0]) > cut[i - 1]:
+                if cut is not None and i > 0 and bond_states(M[i], 0) > cut[i - 1]:
                     one(i, "left", cut[i - 1])
                 else:
                     one(i, "left")
@@ -311,13 +313,13 @@ class TDVPEvolver:
             n_two, M = None, self._mps
             if method == "12site":
                 every = two_site_every and (self.step + 1) % two_site_every == 0
-                two = [bool(every) or (int(M[i].shape[2]) != self.cap and not self._pinned[i])
+                two = [bool(every) or (bond_states(M[i], 2) != self.cap and not self._pinned[i])
                        for i in range(len(M) - 1)]
                 n_two = sum(two)
             else:
                 two = [method == "2site"] * (len(M) - 1)
             if o.expand:                  # pinned two-site bonds go back to the cap
-                cut = [int(m.shape[2]) if method == "1site" or not p else self.cap
+                cut = [bond_states(m, 2) if method == "1site" or not p else self.cap
                        for m, p in zip(M, self._pinned)]
                 self._expand(pstep)
                 self._sweep12(h, meter, spec["fm"], pstep, two, True, cut)
@@ -333,7 +335,7 @@ class TDVPEvolver:
             if not do_prof:
                 return meter
             d = {"step": self.step, "t": self.t, "dt": h,
-                 "max_chi": max(int(m.shape[2]) for m in self._mps[:-1]),
+                 "max_chi": max(bond_states(m, 2) for m in self._mps[:-1]),
                  "disc": pstep["disc"], "expm_s": pstep["expm"], "trunc_s": pstep["trunc"],
                  "env_s": pstep["env"], "krylov_max": meter.m_max,
                  "krylov_cap_hits": meter.cap_hits}

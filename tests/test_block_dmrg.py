@@ -205,7 +205,8 @@ def test_refusals():
     pairs = to_block_mpo(W, [[(1, 0), (-1, 1)]] * N, REAL, sym=ProductSymmetry((U1(), Zn(2))))[0]
     with pytest.raises(ValueError, match="not a sector label"):
         dmrg(pairs, 8, charge=0)
-    for f in (dmrg_excited, lambda w, c: dmrg_block(w, c, 2), lambda w, c: dmrg_tower(w, c, 2)):
+    for f in (lambda w, c: dmrg_block(w, c, 2),
+              lambda w, c: dmrg_tower(w, c, 2, charge=0, pair_solve=True)):
         with pytest.raises(ValueError, match="takes a dense MPO"):
             f(Wb, 8)
     M = random_block_mps(Wb, 8, REAL, charge=0)

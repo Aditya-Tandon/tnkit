@@ -1,0 +1,349 @@
+{
+ "machine": {
+  "platform": "darwin",
+  "machine": "arm64",
+  "python": "3.11.15",
+  "numpy": "1.24.4",
+  "blas": "openblas64_,openblas64_",
+  "blas_threads": "2"
+ },
+ "runs": {
+  "excited-penalty": {
+   "E": "-0x1.4d67a01a5824ap+3",
+   "sweeps": 2,
+   "energies": [
+    "-0x1.4d67a01a58242p+3",
+    "-0x1.4d67a01a5824bp+3"
+   ],
+   "E_penalised": "-0x1.4d67a01a5824bp+3",
+   "penalty_overlaps": [
+    "0x1.cf6468473a58fp-49"
+   ],
+   "discarded_weight": "0x1.74e9aa589b07ep-36",
+   "project_fallbacks": 0,
+   "state": "c7cf29c760f89a3617ac7f1ada1b03477389e299b92f1b3d7914d882ff4efe1a",
+   "matvecs": [
+    154,
+    34
+   ]
+  },
+  "excited-complex": {
+   "E": "-0x1.4d67a01a5824bp+3",
+   "sweeps": 2,
+   "energies": [
+    "-0x1.4d67a01a58248p+3",
+    "-0x1.4d67a01a5824ep+3"
+   ],
+   "E_penalised": "-0x1.4d67a01a5824ep+3",
+   "penalty_overlaps": [
+    "0x1.4f05d33f22c8fp-49"
+   ],
+   "discarded_weight": "0x1.74e9b53d1c7eap-36",
+   "project_fallbacks": 0,
+   "state": "2a9b59249d8b251d5499f57b9615b1dfca10c541c97bfb586291f639728a43d3",
+   "matvecs": [
+    151,
+    34
+   ]
+  },
+  "excited-project": {
+   "E": "-0x1.4d67a01a5824bp+3",
+   "sweeps": 2,
+   "energies": [
+    "-0x1.4d67a01a58251p+3",
+    "-0x1.4d67a01a58245p+3"
+   ],
+   "E_penalised": "-0x1.4d67a01a58245p+3",
+   "penalty_overlaps": [
+    "0x1.959d38c510016p-52"
+   ],
+   "discarded_weight": "0x1.74e999d25ece2p-36",
+   "project_fallbacks": 0,
+   "state": "70c9992beff4a1883c83637d7133a2be6c740d7c63a2bad5290cc273de0bbe5d",
+   "matvecs": [
+    160,
+    49
+   ]
+  },
+  "excited-lanczos": {
+   "E": "-0x1.4d67a01a5824ap+3",
+   "sweeps": 2,
+   "energies": [
+    "-0x1.4d67a01a5825ap+3",
+    "-0x1.4d67a01a58244p+3"
+   ],
+   "E_penalised": "-0x1.4d67a01a58244p+3",
+   "penalty_overlaps": [
+    "0x1.2a55acb57a16cp-51"
+   ],
+   "discarded_weight": "0x1.74e9a48279deep-36",
+   "project_fallbacks": 0,
+   "state": "dc901542fe2daef55b4710f572b5c1b6d9f9e2d6f17359a08149b5bf5043fd28",
+   "matvecs": [
+    153,
+    34
+   ]
+  },
+  "excited-init": {
+   "E": "-0x1.4d67a01a5824bp+3",
+   "sweeps": 2,
+   "energies": [
+    "-0x1.4d67a01a58246p+3",
+    "-0x1.4d67a01a5824fp+3"
+   ],
+   "E_penalised": "-0x1.4d67a01a5824fp+3",
+   "penalty_overlaps": [
+    "0x1.3eff4141ea619p-51"
+   ],
+   "discarded_weight": "0x1.2a0d7d2d4c8c8p-36",
+   "project_fallbacks": 0,
+   "state": "cce567efbc7517463a640f85cd1ca292b76731bc85dddaf349cc0d4b17d579ae",
+   "matvecs": [
+    104,
+    35
+   ]
+  },
+  "tower-penalty": {
+   "energies": [
+    "-0x1.63767e9af4079p+3",
+    "-0x1.4d67a01a5dbabp+3",
+    "-0x1.38d196812d2bap+3",
+    "-0x1.22c2b80096df1p+3",
+    "-0x1.226508662236bp+3"
+   ],
+   "states": [
+    "37e260a0136c8f4a0899b78772e6b4a35b89ada564a23def1138a4100a6fab79",
+    "67b6b3fe1c2de2055098b891e947a1cc459f16626b9c266d2f674cc05023574e",
+    "3e412fb1912468d48cc1e2ec32d01d2535f681da004b643b34b980d6f8433649",
+    "3689e5f5eea41d734c49fdca79a1082a8605f0676cc2078ddf72cfa1b2f71961",
+    "85b5eba391dd57c1be2b64706aacc3dbfeb130ea0cf26f1f193db8ab567746b4"
+   ],
+   "levels": [
+    {
+     "penalty": "0x1.0000000000000p+0",
+     "attempt": 0,
+     "sweeps": 2,
+     "penalty_overlaps": []
+    },
+    {
+     "penalty": "0x1.0000000000000p+2",
+     "attempt": 1,
+     "sweeps": 2,
+     "penalty_overlaps": [
+      "0x1.61c250627040ep-36"
+     ]
+    },
+    {
+     "penalty": "0x1.88b26e070b9a8p+3",
+     "attempt": 1,
+     "sweeps": 2,
+     "penalty_overlaps": [
+      "0x1.08b3fbe53215ep-37",
+      "0x1.98a8000000000p-41"
+     ]
+    },
+    {
+     "penalty": "0x1.3fdd709aa927ap+4",
+     "attempt": 1,
+     "sweeps": 2,
+     "penalty_overlaps": [
+      "0x1.7416000000000p-43",
+      "0x1.6a98078939ac0p-42",
+      "0x1.414cc4f1fe000p-46"
+     ]
+    },
+    {
+     "penalty": "0x1.c436a79e2ef30p+4",
+     "attempt": 1,
+     "sweeps": 2,
+     "penalty_overlaps": [
+      "0x1.aad104703b780p-46",
+      "0x1.f000000000000p-48",
+      "0x1.0800000000000p-49",
+      "0x1.01b5f27c30000p-51"
+     ]
+    }
+   ],
+   "matvecs": [
+    99,
+    14,
+    14,
+    14,
+    101,
+    14,
+    14,
+    14,
+    106,
+    14,
+    14,
+    14,
+    119,
+    14,
+    14,
+    14,
+    118,
+    14
+   ]
+  },
+  "tower-project": {
+   "energies": [
+    "-0x1.63767e9af4079p+3",
+    "-0x1.4d67a01a5dbacp+3",
+    "-0x1.38d196812d2b9p+3",
+    "-0x1.22c2b80096df0p+3",
+    "-0x1.226508662236ap+3"
+   ],
+   "states": [
+    "28358ea856ad7501a58c718494065ee0c174eca0860e06adf65de7863104da04",
+    "e099735c9598e78a3eb1a8b5e2fb61db2f68f1998581eff2e8882919c3f809c1",
+    "53e64158b34eff72e14360247f319a49ebf2f42058ea3569a65e62c840faf936",
+    "efe214094c632d9d697f98b57660d4c6258424c0a01776153fa57e2f9f6c9543",
+    "117eddac50866a457dec98bdc5f167cc70e1e13ab65958bc08d85d026f573cee"
+   ],
+   "levels": [
+    {
+     "penalty": "0x1.0000000000000p+0",
+     "attempt": 0,
+     "sweeps": 2,
+     "penalty_overlaps": []
+    },
+    {
+     "penalty": "0x1.0000000000000p+0",
+     "attempt": 0,
+     "sweeps": 2,
+     "penalty_overlaps": [
+      "0x1.9f5b5fb540000p-56"
+     ]
+    },
+    {
+     "penalty": "0x1.88b26e070b99cp+1",
+     "attempt": 0,
+     "sweeps": 2,
+     "penalty_overlaps": [
+      "0x1.6f32030720000p-55",
+      "0x1.3000000000000p-52"
+     ]
+    },
+    {
+     "penalty": "0x1.3fdd709aa9280p+2",
+     "attempt": 0,
+     "sweeps": 2,
+     "penalty_overlaps": [
+      "0x1.7000000000000p-54",
+      "0x1.a653b66390000p-56",
+      "0x1.31295dbd10000p-54"
+     ]
+    },
+    {
+     "penalty": "0x1.c436a79e2ef36p+2",
+     "attempt": 0,
+     "sweeps": 2,
+     "penalty_overlaps": [
+      "0x1.08a9658ee0000p-55",
+      "0x1.0000000000000p-54",
+      "0x1.8000000000000p-53",
+      "0x1.3b0ae02480000p-55"
+     ]
+    }
+   ],
+   "matvecs": [
+    113,
+    28,
+    124,
+    28,
+    114,
+    28,
+    134,
+    28,
+    116,
+    28
+   ]
+  },
+  "tower-pair_solve": {
+   "energies": [
+    "-0x1.63767e9af4079p+3",
+    "-0x1.4d67a01a5dbabp+3",
+    "-0x1.38d196812d2bap+3",
+    "-0x1.22c2b80096defp+3",
+    "-0x1.226508662236cp+3"
+   ],
+   "states": [
+    "37e260a0136c8f4a0899b78772e6b4a35b89ada564a23def1138a4100a6fab79",
+    "67b6b3fe1c2de2055098b891e947a1cc459f16626b9c266d2f674cc05023574e",
+    "3e412fb1912468d48cc1e2ec32d01d2535f681da004b643b34b980d6f8433649",
+    "96d087acf45ad9e61c310e274e9aef57b7a7b41e58e45a0758aacf71f200a31c",
+    "9dd963aed2c520a2e11355c9881afb1a54491740f98ddd2bd7e5c57f343c1e8d"
+   ],
+   "levels": [
+    {
+     "penalty": "0x1.0000000000000p+0",
+     "attempt": 0,
+     "sweeps": 2,
+     "penalty_overlaps": []
+    },
+    {
+     "penalty": "0x1.0000000000000p+2",
+     "attempt": 1,
+     "sweeps": 2,
+     "penalty_overlaps": [
+      "0x1.61c250627040ep-36"
+     ]
+    },
+    {
+     "penalty": "0x1.88b26e070b9a8p+3",
+     "attempt": 1,
+     "sweeps": 2,
+     "penalty_overlaps": [
+      "0x1.08b3fbe53215ep-37",
+      "0x1.98a8000000000p-41"
+     ]
+    },
+    {
+     "penalty": "0x1.c436a79e2ef30p+4",
+     "attempt": null,
+     "sweeps": 2,
+     "penalty_overlaps": [
+      "0x1.1c70000000000p-45",
+      "0x1.73f4adadb8e00p-45",
+      "0x1.ca9dd2a13b800p-47"
+     ]
+    },
+    {
+     "penalty": "0x1.c436a79e2ef30p+4",
+     "attempt": null,
+     "sweeps": 2,
+     "penalty_overlaps": [
+      "0x1.96f70902b4a00p-46",
+      "0x1.c400000000000p-48",
+      "0x1.c000000000000p-50",
+      "0x1.ba92df0c30000p-53"
+     ]
+    }
+   ],
+   "matvecs": [
+    99,
+    14,
+    14,
+    14,
+    101,
+    14,
+    14,
+    14,
+    106,
+    14,
+    14,
+    14,
+    119,
+    14,
+    14,
+    14,
+    118,
+    14,
+    221,
+    14,
+    14,
+    14
+   ]
+  }
+ }
+}

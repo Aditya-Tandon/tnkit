@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "tnkit"
 license = "MIT"
 license-files = ["LICENSE"]
-version = "0.2.0"
+version = "0.3.0"
 description = "Matrix-product-state library with DMRG and TDVP on numpy and PyTorch backends, on CPUs and GPUs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -41,6 +41,21 @@ docs = [
   "sphinx-design>=0.6",
 ]
 
+# Development groups, for uv (`uv sync` installs `dev`); not part of the published metadata.
+[dependency-groups]
+# setuptools: tests/test_packaging.py builds in-process; sympy: tests/test_su2.py checks against it.
+dev = ["pytest>=7", "setuptools>=77", "sympy"]
+# The documentation build, pinned (Read the Docs and local).
+docs = [
+  "sphinx==8.1.3",
+  "docutils==0.21.2",
+  "myst-parser==4.0.1",
+  "myst-nb==1.2.0",
+  "pydata-sphinx-theme==0.16.1",
+  "sphinx-design==0.6.1",
+  "sphinx-copybutton==0.5.2",
+]
+
 [project.urls]
 Documentation = "https://tnkit.readthedocs.io"
 Repository = "https://github.com/Aditya-Tandon/tnkit"
@@ -56,3 +71,29 @@ markers = [
   "cuda: needs a CUDA device; skipped automatically when none is present",
   "slow: long-running (minutes); deselect with -m 'not slow'",
 ]
+
+# uv only; pip ignores this section. The lock covers Linux x86_64 and macOS arm64. On Linux,
+# `--extra torch` takes the CPU-only torch wheel and `--extra cuda` the CUDA 13.2 build from
+# download.pytorch.org; on macOS both take PyPI's wheel.
+[tool.uv]
+environments = [
+  "sys_platform == 'linux' and platform_machine == 'x86_64'",
+  "sys_platform == 'darwin' and platform_machine == 'arm64'",
+]
+conflicts = [[{ extra = "torch" }, { extra = "cuda" }]]
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cpu", extra = "torch", marker = "sys_platform == 'linux'" },
+  { index = "pytorch-cu132", extra = "cuda", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu132"
+url = "https://download.pytorch.org/whl/cu132"
+explicit = true

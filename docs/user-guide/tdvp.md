@@ -67,3 +67,45 @@ Both integrators also evolve a block MPS under a block MPO, conserving the charg
 `backend` is a {py:class}`~tnkit.BlockBackend` around a complex dense backend, for example
 `BlockBackend(get_backend("numpy"))`. Block runs truncate with `trunc="svd"` only, and take no
 `fast_expm` and no CUDA graphs; `measure` receives the block tensors. See {doc}`symmetries`.
+
+## Thermal states
+
+{py:mod}`tnkit.thermal` stores a Gibbs state as a pure state of the chain and one ancilla per
+site, fused into sites of dimension `d*d`. {py:func}`~tnkit.thermal.thermal_state` cools the
+infinite-temperature state in imaginary time with two-site TDVP and returns the state and
+`log Z`; `charges=` restricts it to one charge sector. Expectation values use
+{py:func}`~tnkit.thermal.purify` and {py:func}`~tnkit.thermal.purify_mpo`, and real-time
+evolution uses either integrator on `purify_mpo(H, twin=True)`, which evolves the ancillas
+backward so that the thermal state itself does not change:
+
+```python
+from tnkit import mpo_expectation, tdvp2_evolve
+from tnkit.models_lgt import schwinger_charges, schwinger_mpo
+from tnkit.thermal import purify_mpo, thermal_state
+
+H = schwinger_mpo(24, x=4.0, mu=0.2)
+rho, log_z = thermal_state(H, beta=0.5, chi=256, dbeta=0.01,
+                           charges=schwinger_charges(24), svd_tol=1e-10)
+E = mpo_expectation(rho, purify_mpo(H)).real
+S = log_z + 0.5 * E                                   # entropy
+rho_t, records = tdvp2_evolve(rho, purify_mpo(H, twin=True), 512, 0.025, 40)
+```
+
+With `blocks=True` the same state is held in block tensors under
+`tnkit.thermal.PURIFIED`, U(1) x U(1): the physical and the ancilla charge are
+conserved separately. The block MPOs come from `purify_mpo(H, twin=True, charges=q)`, the
+integrators run with `backend=BlockBackend(get_backend("numpy"))`, a packet is applied with
+{py:func}`~tnkit.block_backend.apply_block_mpo`, and observables take
+`to_dense_mps(rho, purified_charges(q))`:
+
+```python
+from tnkit import SZ, BlockBackend, get_backend, local_expectations, to_dense_mps
+from tnkit.thermal import purified_charges, purify
+
+q = schwinger_charges(24)
+rho, log_z = thermal_state(H, beta=0.5, chi=256, dbeta=0.01, charges=q, blocks=True,
+                           svd_tol=1e-10)
+rho_t, _ = tdvp2_evolve(rho, purify_mpo(H, twin=True, charges=q), 512, 0.025, 40,
+                        backend=BlockBackend(get_backend("numpy")))
+z = local_expectations(to_dense_mps(rho_t, purified_charges(q)), purify(SZ))
+```

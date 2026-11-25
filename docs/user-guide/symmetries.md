@@ -21,8 +21,9 @@ Zn(2)                         # charges 0..n-1 that add modulo n, e.g. parity
 ProductSymmetry((U1(), Zn(2)))   # both at once; charges are tuples such as (1, 0)
 ```
 
-All three are abelian: two charges combine into exactly one charge. SU(2) is not yet
-supported.
+All three are abelian: two charges combine into exactly one charge. Block tensors take only
+these. Non-abelian symmetries such as SU(2) run on symmetric tensors; see
+[Symmetric tensors](#symmetric-tensors).
 
 ## Symmetric DMRG
 
@@ -77,13 +78,15 @@ psi, records = tdvp2_evolve(
 
 ## Limits
 
-- Abelian symmetries only.
+- Abelian symmetries only (for SU(2), see [Symmetric tensors](#symmetric-tensors)).
 - `trunc="svd"` only, in DMRG and in TDVP, and no `eig="lanczos-mixed"`.
 - Block TDVP takes no `fast_expm` and no CUDA graphs.
-- {py:func}`~tnkit.dmrg_excited`, and `dmrg_block` and `dmrg_tower` from
-  `tnkit.dmrg_excited`, take dense MPOs only.
-- Block runs expand the subspace in their opening sweeps. With or without that, a block run
-  at small `chi` can stop at a different fixed point than dense DMRG.
+- `dmrg_block` and `dmrg_tower(pair_solve=True)` from `tnkit.dmrg_excited` take dense MPOs
+  only. {py:func}`~tnkit.dmrg_excited` and `dmrg_tower` take block MPOs with `charge=`, as
+  `dmrg` does.
+- Block runs of `dmrg` expand the subspace in their opening sweeps; `dmrg_excited` and
+  `dmrg_tower` do not (`info["expand"]` is 0). With or without expansion, a block run at small
+  `chi` can stop at a different fixed point than dense DMRG.
 
 These mistakes raise an error rather than run:
 
@@ -91,7 +94,7 @@ These mistakes raise an error rather than run:
 |---|---|
 | no `sym=` | `TypeError`: missing keyword-only argument `'sym'` |
 | `sym="U1"` | `TypeError: ... sym= must be a Symmetry such as U1(), got 'U1'` |
-| a non-abelian symmetry such as SU(2) | `NotImplementedError: ... needs unique fusion, which block tensors require` |
+| a non-abelian symmetry such as SU(2) in `to_block_mpo` | `NotImplementedError: ... needs unique fusion, which block tensors require` |
 | block MPO without `charge=` | `ValueError: a block MPO needs exactly one of charge= ... and a block init_mps ...` |
 | `charge=` with a dense MPO | `ValueError: charge= needs a block MPO: convert the MPO with to_block_mpo(W, site_charges, be, sym=...) first` |
 | `trunc="gram"` on a block MPO | `ValueError: a block MPO needs trunc='svd' and an eig other than 'lanczos-mixed'` |
@@ -125,3 +128,105 @@ U, S, Vh, discarded = truncated_svd(B, chi=3)
   `set_cache_limit()` bounds them; see {doc}`gpu`.
 
 See {doc}`../api/blocks` for the full reference.
+
+## Symmetric tensors
+
+```{warning}
+Provisional, and not exported from `tnkit`: import from the modules named below. The API, and
+the file layout of saved states, may change before 1.0.
+```
+
+Block tensors need abelian symmetries. Symmetric tensors (`tnkit.symmetric_tensor`) take any
+symmetry that `tnkit.symmetry` describes, non-abelian ones included. A tensor that commutes with
+the group is stored as one reduced matrix per coupled sector (the total irrep of its legs), over
+the fusion trees of its legs; the Clebsch-Gordan coefficients are never stored. Under SU(2) a
+bond keeps whole multiplets: one reduced value of spin $j$ stands for $2j + 1$ dense states.
+
+Symmetries:
+
+- `U1()`, `Zn(n)` and `SU2()` from `tnkit.symmetry`, and any `ProductSymmetry` of them, such as
+  `ProductSymmetry((U1(), SU2()))`. SU(2) sectors are labelled by twice the spin: 0, 1 (spin
+  1/2), 2 (spin 1), ...
+- Other groups through a subclass of `Symmetry` that gives the fusion rules and the
+  Clebsch-Gordan, F and R coefficients, including fusions in which an outcome appears more than
+  once (`fusion = "generic"`).
+
+### Spaces and tensors
+
+A leg is a {py:class}`~tnkit.symmetric_tensor.Space`: its sectors, the number of multiplets of
+each, and whether the leg is dual. A tensor maps its domain legs to its codomain legs.
+
+```python
+import numpy as np
+from tnkit.symmetry import SU2
+from tnkit.symmetric_tensor import Space, random, from_dense
+
+V = Space(SU2(), (0, 1, 2), (2, 1, 1))   # spin 0 twice, spin 1/2 once, spin 1 once
+print(V.dim)                             # 7 dense states
+t = random((V, V.dual()), (), rng=np.random.default_rng(0))
+print(t)          # SymmetricTensor(shape=(7, 7), codomain legs=2, sectors=1, stored=6)
+
+s, dropped = from_dense(t.to_dense(), (V, V.dual()))   # project a dense array back
+```
+
+`permute`, `contract`, `fuse` and `split` in `tnkit.symmetric_tensor`, and `svd`,
+`truncated_svd` and `qr` in `tnkit.symmetric_linalg`, act on the reduced blocks. A truncated SVD
+keeps or drops whole multiplets.
+
+### DMRG, excited states and TDVP
+
+{py:func}`~tnkit.symmetric_backend.symmetric_mpo` converts a dense MPO, given a
+{py:class}`~tnkit.symmetric_backend.SiteSpace` for each site. It raises if the MPO does not
+commute with the symmetry. `dmrg`, `dmrg_excited` and `tdvp2_evolve` then run as they do on
+block MPOs. For the spin-1/2 Heisenberg chain under SU(2):
+
+```python
+from tnkit import dmrg, dmrg_excited, get_backend, tdvp2_evolve
+from tnkit.opsum import OpSum, compile_mpo, spin_half
+from tnkit.symmetric_backend import SymmetricBackend, spin_half_site, symmetric_mpo, to_dense_mps
+
+N = 10
+os = OpSum()
+for i in range(N - 1):                       # S_i . S_(i+1)
+    os += (0.5, "Sp", i, "Sm", i + 1)
+    os += (0.5, "Sm", i, "Sp", i + 1)
+    os += (0.25, "Z", i, "Z", i + 1)
+W, _ = compile_mpo(os, [spin_half()] * N, dtype="auto")
+sites = [spin_half_site()] * N               # one spin 1/2 of SU(2) per site
+Ws, _ = symmetric_mpo(W, sites)
+
+E0, gs, _ = dmrg(Ws, 32, charge=0)           # lowest singlet: -4.2580
+Et, trip, _ = dmrg(Ws, 32, charge=2)         # lowest triplet (spin 1): -3.9307
+E1, ex, _ = dmrg_excited(Ws, 32, prev_states=[gs], charge=0)   # next singlet
+
+be = SymmetricBackend(get_backend("numpy"))  # complex, for real time
+psi, _ = tdvp2_evolve(list(gs), Ws, 32, 0.05, 10, backend=be)
+dense = to_dense_mps(trip, sites)            # dense tensors; the last bond holds the triplet
+```
+
+- `charge` is the total sector: twice the total spin under SU(2), a tuple such as `(0, 2)`
+  under U(1) x SU(2). As with block MPOs, exactly one of `charge=` and a symmetric `init_mps`
+  is needed.
+- `chi` (and TDVP's `chi_max`) counts multiplets, so the dense bond is larger: a bond of `chi`
+  multiplets holds the sum of their dimensions in states. `dmrg_excited` reports both
+  (`info["max_bond"]`, `info["max_bond_dense"]`).
+- A state in a sector of nonzero spin keeps its whole multiplet on its last bond. `mps_inner`,
+  `mpo_expectation` and `mpo_variance` in `tnkit.dmrg_excited` return the values of one state
+  of it.
+- `save_mps` and `load_mps` in `tnkit.symmetric_backend` write a symmetric MPS to one `.npz`
+  and read it back onto any dense backend.
+- `models_lgt2f.site_spaces_2f` gives the sites of the two-flavour Schwinger model under
+  U(1) x SU(2).
+- The limits of block tensors apply: `trunc="svd"` only, no `eig="lanczos-mixed"`, no
+  `fast_expm` and no CUDA graphs in TDVP, and `dmrg_block` and `dmrg_tower(pair_solve=True)`
+  take dense MPOs only.
+
+### GPUs
+
+Pass `backend="torch-cuda"` to `dmrg` or `dmrg_excited`, or
+`SymmetricBackend(get_backend("torch-cuda"))` to `tdvp2_evolve`. The reduced blocks, the
+contractions, the factorisations and the maps between block layouts stay on the device; the
+small recoupling matrices are computed on the host and cached. The cache limits are set by the
+`TNKIT_SYMMETRIC_*` variables in {doc}`environment`.
+
+See {doc}`../api/symmetric` for the full reference.

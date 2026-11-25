@@ -200,3 +200,22 @@ def test_open_ended_front_doors_accept_windows():
     W = [rng.standard_normal((w, w, d, d)) for _ in range(4)]
     assert apply_mpo(M, W)[0].shape == (D * w, d, D * w)
     compress(M, 2)
+
+
+def test_uniform_reads_the_buffer_of_a_block_tensor():
+    torch = pytest.importorskip("torch")
+    from tnkit.backend import get_backend
+    from tnkit.block_backend import to_block_mps
+    from tnkit.symmetry import U1
+    M = [np.zeros((1, 2, 1), complex) for _ in range(4)]
+    for t in M:
+        t[0, 0, 0] = 1
+    qs = [[0, 1]] * 4
+    dbe = get_backend("torch-cpu")
+    B = to_block_mps(M, qs, dbe, sym=U1())[0]
+    assert isinstance(B[0].data.dtype, torch.dtype)
+    check_mps(B, uniform=True)
+    assert inv._family(B[0]) == f"torch complex on {B[0].data.device}"
+    B[1] = type(B[1])(B[1].struct, B[1].data.real.contiguous())
+    with pytest.raises(InvariantError, match=r"M\[1\] is torch real"):
+        check_mps(B, uniform=True)

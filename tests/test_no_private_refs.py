@@ -11,13 +11,18 @@ to text files. The terms file is `release/private_terms.txt` when present, or `-
 
 prints the hits and exits 1 on any. In a checkout with `release/public_paths.txt` the scanned
 files are the ones that list selects, with `release/public/` replacing or adding to them;
-anywhere else, every file.
+anywhere else, the git-tracked files, or every file outside the usual build and environment
+directories when git is unavailable.
 """
 import io
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tokenize
+
+import pytest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LIST = os.path.join("release", "public_paths.txt")
@@ -25,7 +30,8 @@ TERMS = os.path.join("release", "private_terms.txt")
 OVERLAY = "release/public/"
 SUFFIXES = {".py", ".md", ".toml", ".cff", ".txt", ".rst", ".cfg", ".yaml", ".yml", ".json",
             ".sh", ".jl", ".tsv", ".in", ""}
-SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", "build", "dist", "_build"}
+SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", "build", "dist", "_build",
+             ".venv", "venv", ".tox", ".nox", ".mypy_cache"}
 PROSE_FILES = {".md", ".rst", ".cff", ".txt", ""}            # every line is prose
 HASH_COMMENTS = {".sh", ".jl", ".toml", ".yaml", ".yml", ".cfg", ".in"}  # prose after "#"
 
@@ -99,12 +105,33 @@ def selected(rel, rs):
     return hit
 
 
-def shipped(root=ROOT):
-    rs = rules(root)
+def tracked(root):
+    """Git-tracked files under `root`, or None when git is missing or `root` is not a checkout."""
+    try:
+        top = subprocess.run(["git", "rev-parse", "--show-toplevel"], cwd=root,
+                             capture_output=True, text=True, check=True).stdout.strip()
+        if os.path.realpath(top) != os.path.realpath(root):
+            return None
+        out = subprocess.run(["git", "ls-files", "-z"], cwd=root, capture_output=True,
+                             check=True).stdout
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return sorted(os.path.join(root, f) for f in out.decode().split("\0") if f)
+
+
+def walk(root):
     for dirpath, dirnames, names in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if d not in SKIP_DIRS)
         for name in sorted(names):
-            path = os.path.join(dirpath, name)
+            yield os.path.join(dirpath, name)
+
+
+def shipped(root=ROOT):
+    rs = rules(root)
+    files = None if rs is not None else tracked(root)
+    for path in walk(root) if files is None else files:
+        if os.path.isfile(path):
+            name = os.path.basename(path)
             rel = os.path.relpath(path, root).replace(os.sep, "/")
             if os.path.splitext(name)[1] not in SUFFIXES:
                 continue
@@ -153,7 +180,7 @@ def jl_prose(lines):
 
 def hits(path, pats=None):
     anywhere, prose, docs = pats or patterns(default_extra(ROOT))
-    ext = os.path.splitext(path)[1]
+    ext = ".toml" if os.path.basename(path) == "uv.lock" else os.path.splitext(path)[1]
     with open(path, encoding="utf-8", errors="replace") as fh:
         text = fh.read()
     lines = text.splitlines()
@@ -191,6 +218,30 @@ def test_shipped_files_exist():
     names = {os.path.relpath(p, ROOT).replace(os.sep, "/") for p in shipped()}
     assert {"pyproject.toml", "tnkit/__init__.py", "bench/suite/run.py",
             "tests/test_no_private_refs.py"} <= names
+
+
+def make_venv(root):
+    venv = root / ".venv" / "x"
+    venv.mkdir(parents=True)
+    (venv / "pyvenv.cfg").write_text("home = /" + "home/someone/python\n")
+    (root / "a.txt").write_text("clean\n")
+
+
+def test_untracked_venv_not_scanned_in_git_checkout(tmp_path):
+    if shutil.which("git") is None:
+        pytest.skip("git not available")
+    make_venv(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "a.txt"], cwd=tmp_path, check=True)
+    files, bad = scan(str(tmp_path), None)
+    assert [os.path.basename(p) for p in files] == ["a.txt"] and not bad
+
+
+def test_fallback_walk_skips_venv(tmp_path, monkeypatch):
+    make_venv(tmp_path)
+    monkeypatch.setattr(sys.modules[__name__], "tracked", lambda root: None)
+    files, bad = scan(str(tmp_path), None)
+    assert [os.path.basename(p) for p in files] == ["a.txt"] and not bad
 
 
 def test_no_private_references():

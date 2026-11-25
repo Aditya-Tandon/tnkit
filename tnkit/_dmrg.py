@@ -29,8 +29,11 @@ import numpy as np
 from .eigensolver import (lanczos_ground, lanczos_ground_restart, lanczos_ground_mixed,
                           lobpcg_ground, scipy_host_ground, check_reorth_periodic)
 from .backend import NumpyBackend, get_backend
-from .blocks import BlockTensor, from_dense, truncated_svd
+from .blocks import BlockTensor, from_dense
 from .block_backend import BlockBackend, random_block_mps
+from .symmetric_backend import SymmetricBackend, edge_environments, random_symmetric_mps
+from .symmetric_tensor import SymmetricTensor
+from ._sparse import linalg_of, symmetry_of
 from .expansion import enriched_split
 from .legs import fuse, split
 from . import invariants
@@ -239,6 +242,8 @@ def _edge_envs(M, mpo, be, L0=None, RN=None):
                 be.ones((1, 1, 1)) if RN is None else be.array(RN))
     if L0 is not None or RN is not None:
         raise ValueError("block tensors need open boundaries (L0 = RN = None)")
+    if isinstance(M[0], SymmetricTensor):
+        return edge_environments(M, mpo, be)
     one = be.dense.ones((1, 1, 1))
     a, b = M[0].legs[0], M[-1].legs[2]
     return (from_dense(one, (a, mpo[0].legs[0].flip(), a.flip()))[0],
@@ -292,10 +297,9 @@ def right_canonicalize(M: MutableMPS, be: Optional[Any] = None) -> MutableMPS:
 
 def _right_canonicalize_blocks(M: MutableMPS, be: Any) -> MutableMPS:
     """`right_canonicalize` for block tensors, by an LQ per block instead of an SVD."""
-    from .blocks import qr
     for i in range(len(M) - 1, 0, -1):
         f, rec = fuse(M[i], ((0,), (1, 2)), be)
-        Lm, Q = qr(f, right=True)
+        Lm, Q = linalg_of(f).qr(f, right=True)
         M[i], Lm = split(Q, rec, be, legs=(1,)), split(Lm, rec, be, legs=(0,))
         M[i - 1] = be.einsum("asb,bc->asc", M[i - 1], Lm)
         M[i - 1] = M[i - 1] / be.norm(M[i - 1])
@@ -484,8 +488,11 @@ def dmrg(mpo: Sequence[Tensor], chi: Optional[int] = None,
     them, `to_dense_mps` makes them dense. `backend` names the dense backend under the
     blocks, or is a `BlockBackend`. Block runs expand the subspace in their opening sweeps by
     default (`expand`); with or without it, a block run at small `chi` can stop at a different
-    fixed point than dense DMRG (see `expand`). Limits: `trunc='svd'` only, no 'lanczos-mixed',
-    no SU(2), and `dmrg_excited`, `dmrg_block` and `dmrg_tower` take dense MPOs only.
+    fixed point than dense DMRG (see `expand`). An MPO of symmetric tensors
+    (`tnkit.symmetric_backend.symmetric_mpo`, any symmetry, SU(2) included) runs the same way
+    with a `SymmetricBackend`; `chi` then counts multiplets and `charge` is the total sector.
+    Limits: `trunc='svd'` only, no 'lanczos-mixed', and `dmrg_block` and
+    `dmrg_tower(pair_solve=True)` take dense MPOs only.
 
     eig_stop -- READ THIS BEFORE BENCHMARKING OR QUOTING AN ACCURACY
     ---------------------------------------------------------------
@@ -526,13 +533,39 @@ def dmrg(mpo: Sequence[Tensor], chi: Optional[int] = None,
     return _dmrg(mpo, chi, o)
 
 
+def _check_sector(mpo, charge, init_mps, trunc, eig):
+    """The block-MPO rules on `charge`, `init_mps`, `trunc` and `eig` of `dmrg` and
+    `dmrg_excited`; returns whether `mpo` is a block MPO."""
+    block = getattr(mpo[0], "is_block", False)
+    if init_mps is not None and getattr(init_mps[0], "is_block", False) != block:
+        raise ValueError("a block MPO needs a block init_mps, and a dense MPO a dense one")
+    if block and (trunc != "svd" or eig == "lanczos-mixed"):
+        raise ValueError("a block MPO needs trunc='svd' and an eig other than 'lanczos-mixed'")
+    if charge is not None and not block:
+        raise ValueError("charge= needs a block MPO: convert the MPO with to_block_mpo(W, "
+                         "site_charges, be, sym=...) first")
+    if block and (charge is None) == (init_mps is None):
+        raise ValueError("a block MPO needs exactly one of charge= (the total charge of the state "
+                         "sought) and a block init_mps (which fixes the charge)")
+    if charge is not None:
+        try:
+            symmetry_of(mpo[0]).label(charge)
+        except TypeError:
+            raise ValueError(f"charge={charge!r} is not a sector label of "
+                             f"{symmetry_of(mpo[0])}") from None
+    return block
+
+
 def _block_backend(spec: Any, mpo: Sequence[Any], init_mps: Optional[MPSLike]):
-    """The `BlockBackend` for block tensors: `spec` is one, or names the dense backend under
-    it ('auto': real when the block data are real)."""
-    if isinstance(spec, BlockBackend):
+    """The `BlockBackend` for block tensors, or the `SymmetricBackend` for symmetric ones:
+    `spec` is one, or names the dense backend under it ('auto': real when the data are real)."""
+    wrap = SymmetricBackend if isinstance(mpo[0], SymmetricTensor) else BlockBackend
+    if isinstance(spec, wrap):
         return spec
+    if isinstance(spec, (BlockBackend, SymmetricBackend)):
+        raise ValueError(f"{type(mpo[0]).__name__} operands need a {wrap.__name__}")
     data = lambda ts: None if ts is None else [t.data for t in ts]
-    return BlockBackend(get_backend(spec, mpo=data(mpo), init_mps=data(init_mps)))
+    return wrap(get_backend(spec, mpo=data(mpo), init_mps=data(init_mps)))
 
 
 def _dmrg(mpo: Sequence[Tensor], chi: int, o: DMRGOptions) -> Tuple[float, MPS, Dict[str, Any]]:
@@ -548,23 +581,7 @@ def _dmrg(mpo: Sequence[Tensor], chi: int, o: DMRGOptions) -> Tuple[float, MPS, 
     eig_stop, reorth_alg = o.eig_stop, o.reorth_alg
 
     invariants.entry(init_mps, mpo)
-    block = getattr(mpo[0], "is_block", False)
-    if init_mps is not None and getattr(init_mps[0], "is_block", False) != block:
-        raise ValueError("a block MPO needs a block init_mps, and a dense MPO a dense one")
-    if block and (trunc != "svd" or eig == "lanczos-mixed"):
-        raise ValueError("a block MPO needs trunc='svd' and an eig other than 'lanczos-mixed'")
-    if o.charge is not None and not block:
-        raise ValueError("charge= needs a block MPO: convert the MPO with to_block_mpo(W, "
-                         "site_charges, be, sym=...) first")
-    if block and (o.charge is None) == (init_mps is None):
-        raise ValueError("a block MPO needs exactly one of charge= (the total charge of the state "
-                         "sought) and a block init_mps (which fixes the charge)")
-    if o.charge is not None:
-        try:
-            mpo[0].struct.sym.label(o.charge)
-        except TypeError:
-            raise ValueError(f"charge={o.charge!r} is not a sector label of "
-                             f"{mpo[0].struct.sym}") from None
+    block = _check_sector(mpo, o.charge, init_mps, trunc, eig)
     sites = o.sites
     if sites not in (1, 2):
         raise ValueError(f"sites must be 1 or 2, got {sites!r}")
@@ -590,8 +607,9 @@ def _dmrg(mpo: Sequence[Tensor], chi: int, o: DMRGOptions) -> Tuple[float, MPS, 
     if init_mps is not None:
         M = right_canonicalize([be.array(m) for m in init_mps], be)
     elif block:
-        M = right_canonicalize(random_block_mps(mpo, chi, be.dense, o.charge,
-                                                np.random.default_rng(seed)), be)
+        start = random_symmetric_mps if isinstance(mpo[0], SymmetricTensor) else random_block_mps
+        M = right_canonicalize(start(mpo, chi, be.dense, o.charge, np.random.default_rng(seed)),
+                               be)
     else:
         M = right_canonicalize(random_mps(N, chi, d, np.random.default_rng(seed), be), be)
     if eig not in _EIGSOLVERS and eig != "lanczos-mixed":
@@ -624,7 +642,7 @@ def _dmrg(mpo: Sequence[Tensor], chi: int, o: DMRGOptions) -> Tuple[float, MPS, 
 
     def truncate(theta, iso):
         if block:
-            return truncated_svd(theta, chi)              # chi largest over all sectors
+            return linalg_of(theta).truncated_svd(theta, chi)   # chi largest over all sectors
         return _truncate(theta, chi, trunc, be, _rng, iso)   # shared with tdvp2_evolve
 
     def eigsolve(x0, apply, cur_eig_tol, apply_lo=None):
@@ -634,10 +652,11 @@ def _dmrg(mpo: Sequence[Tensor], chi: int, o: DMRGOptions) -> Tuple[float, MPS, 
         counter = {"n": 0}
         if block:                                  # the solver sees the flat block buffer
             x0 = x0.canonical()
-            struct = x0.struct
+            wrap = (x0.with_data if isinstance(x0, SymmetricTensor)
+                    else (lambda d, s=x0.struct: BlockTensor(s, d)))
             def matvec(x):
                 counter["n"] += 1
-                return apply(BlockTensor(struct, x)).canonical().data
+                return apply(wrap(x)).canonical().data
         else:
             def matvec(x):
                 counter["n"] += 1
@@ -647,7 +666,7 @@ def _dmrg(mpo: Sequence[Tensor], chi: int, o: DMRGOptions) -> Tuple[float, MPS, 
                 counter["n"] += 1
                 return apply_lo(x.reshape(shape)).reshape(-1)
 
-        local_dim = struct.size if block else int(np.prod(shape))
+        local_dim = int(x0.data.shape[0]) if block else int(np.prod(shape))
         if warm_start:
             v0 = x0.data if block else x0.reshape(-1)
         else:
@@ -668,7 +687,7 @@ def _dmrg(mpo: Sequence[Tensor], chi: int, o: DMRGOptions) -> Tuple[float, MPS, 
             e, x, minfo = eig_fn(matvec, v0, be, tol=cur_eig_tol, max_iter=mi, **eig_kwargs)
         be.sync(); phase_t["eig"] += time.perf_counter() - t0
         matvec_calls += counter["n"]
-        return e, (BlockTensor(struct, x) if block else x.reshape(shape))
+        return e, (wrap(x) if block else x.reshape(shape))
 
     def solve_block(i, sweep_dir, cur_eig_tol, alpha):
         nonlocal total_disc
