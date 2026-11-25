@@ -55,6 +55,9 @@ def _backend_for(mps: MPSLike) -> Any:
     tensor is a torch tensor would undo it.
     """
     A = mps[0]
+    if hasattr(A, "codomain"):
+        raise TypeError("observables need dense tensors: convert a symmetric MPS with "
+                        "tnkit.symmetric_backend.to_dense_mps(mps, sites)")
     if getattr(A, "is_block", False):
         raise TypeError("observables need dense tensors: convert a block MPS with "
                         "tnkit.block_backend.to_dense_mps")

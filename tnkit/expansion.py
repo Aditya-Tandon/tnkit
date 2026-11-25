@@ -19,11 +19,12 @@ own charge sectors, and the next local solve can put weight there.
 """
 from __future__ import annotations
 
-from typing import Any, List, Sequence
+from typing import Any, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 from . import invariants
+from ._sparse import is_empty, is_symmetric
 from .legs import fuse, split
 
 
@@ -31,8 +32,14 @@ def _is_block(x) -> bool:
     return getattr(x, "is_block", False)
 
 
-def _top(mat, k: int, be, rel_tol: float):
-    """U, S, Vh for the `k` largest singular values of `mat` above `rel_tol` times the largest."""
+def _top(mat, k: int, be, rel_tol: float, density: bool = False):
+    """U, S, Vh for the `k` largest singular values of `mat` above `rel_tol` times the largest.
+    With `density`, `mat` is a density matrix, and a symmetric one ranks its multiplets by
+    dim(c) lambda, the weight of an eigenvalue lambda, instead of dim(c) lambda^2."""
+    if is_symmetric(mat):
+        from .symmetric_linalg import truncated_svd
+        U, S, Vh, _ = truncated_svd(mat, k, zero_tol=rel_tol, density=density)
+        return U, S, Vh
     if _is_block(mat):
         from .blocks import truncated_svd
         U, S, Vh, _ = truncated_svd(mat, k, zero_tol=rel_tol)
@@ -44,6 +51,9 @@ def _top(mat, k: int, be, rel_tol: float):
 
 
 def _join(a, b, axis: int):
+    if is_symmetric(a):
+        from .symmetric_tensor import concat
+        return concat(a, b, axis)
     if _is_block(a):
         from .blocks import concat
         return concat(a, b, axis)
@@ -54,11 +64,22 @@ def _join(a, b, axis: int):
 
 
 def _pad_right(t, leg, be):
-    """`t` (a, s, b) with zero columns appended to leg b: `leg` (block) or that many (dense)."""
+    """`t` (a, s, b) with zero columns appended to leg b: `leg` (block or symmetric) or that
+    many (dense)."""
+    if is_symmetric(t):
+        from .symmetric_tensor import zeros
+        return _join(t, zeros(t.codomain[:2] + (leg,), (), t.be, t.sym), 2)
     if _is_block(t):
         from .blocks import zeros
         return _join(t, zeros(t.legs[:2] + (leg,), t.charge, t.data), 2)
     return _join(t, be.zeros((t.shape[0], t.shape[1], leg)), 2)
+
+
+def _new_leg(new):
+    """The leg that meets leg 0 of `new` (block or symmetric), or its size (dense)."""
+    if is_symmetric(new):
+        return new.codomain[0].dual()
+    return new.legs[0].flip() if _is_block(new) else int(new.shape[0])
 
 
 def _project_out(Y, B, be):
@@ -80,6 +101,28 @@ def _check_right_orthonormal(M, be, tol: float = 1e-10) -> None:
             raise ValueError(f"expand_right needs M right-canonical from site 1; site {j} is not")
 
 
+def zip_up(M: Sequence[Any], mpo: Sequence[Any], chi: Optional[int], be, X,
+           rel_tol: float = 1e-14) -> Tuple[List[Any], Any]:
+    """`mpo` applied to the MPS `M` site by site from the left, each new bond cut by SVD to at
+    most `chi` states (None: no cap), dropping singular values below `rel_tol` times the
+    largest. `X` is the left edge, legs (c, w, a): the new bond, the MPO channel and the MPS
+    bond. Returns the left-canonical tensors (c, s, c') of sites 0 to N-2 and the rest of the
+    state at site N-1, legs (c, s, w, b). Uncut, it is O|psi> exactly whatever the gauge of `M`.
+    """
+    A = []
+    for i in range(len(M)):
+        T = be.einsum("cwa,asb->cwsb", X, M[i])
+        T = be.einsum("cwsb,wvts->ctvb", T, mpo[i])
+        if _is_block(T) and is_empty(T):
+            raise ValueError("O|psi> = 0: its charge sector is empty")
+        if i == len(M) - 1:
+            return A, T
+        mat, rec = fuse(T, ((0, 1), (2, 3)), be)
+        U, S, Vh = _top(mat, min(mat.shape) if chi is None else chi, be, rel_tol)
+        A.append(split(U, rec, be, legs=(0,)))
+        X = split(Vh.scale(S, 0) if _is_block(Vh) else S[:, None] * Vh, rec, be, legs=(1,))
+
+
 def expand_right(M: List[Any], mpo: Sequence[Any], n_extra: int, chi: int, be, L0, RN,
                  rel_tol: float = 1e-8, check: bool = True) -> List[int]:
     """Add up to `n_extra` states to the right basis of every bond of `M`, in place.
@@ -97,16 +140,7 @@ def expand_right(M: List[Any], mpo: Sequence[Any], n_extra: int, chi: int, be, L
     if check and invariants.mode() != "off":
         _check_right_orthonormal(M, be)
     N = len(M)
-    A, X = [], L0                               # H|psi>, left-canonical; X carries the rest
-    for i in range(N):
-        T = be.einsum("cwa,asb->cwsb", X, M[i])
-        T = be.einsum("cwsb,wvts->ctvb", T, mpo[i])
-        if i == N - 1:
-            break
-        mat, rec = fuse(T, ((0, 1), (2, 3)), be)
-        U, S, Vh = _top(mat, chi, be, 1e-14)
-        A.append(split(U, rec, be, legs=(0,)))
-        X = split(Vh.scale(S, 0) if _is_block(Vh) else S[:, None] * Vh, rec, be, legs=(1,))
+    A, T = zip_up(M, mpo, chi, be, L0)          # H|psi>
     # Y: the right parts of H|psi> at bond j-1, in the basis s_j x (right basis of bond j)
     Y = be.einsum("ctvb,dvb->ctd", T, RN)
     added = [0] * (N - 1)
@@ -117,8 +151,7 @@ def expand_right(M: List[Any], mpo: Sequence[Any], n_extra: int, chi: int, be, L
             _, _, Vh = _top(mat, n_extra, be, rel_tol)
             new = split(Vh, rec, be, legs=(1,))
             M[j] = _join(M[j], new, 0)
-            M[j - 1] = _pad_right(M[j - 1], new.legs[0].flip() if _is_block(new)
-                                  else int(new.shape[0]), be)
+            M[j - 1] = _pad_right(M[j - 1], _new_leg(new), be)
             added[j - 1] = int(new.shape[0])
         if j > 1:
             Tj = be.einsum("asb,csb->ac", be.conj(M[j]), Y)
@@ -144,11 +177,13 @@ def enriched_split(x, extra, alpha: float, chi: int, be, right: bool, rel_tol: f
     right=True: the new basis spans the first two legs of `x`; it is the `chi` leading
     eigenvectors of x x^H + alpha^2 P P^H, where P is `extra` (same first two legs, any others)
     less its part inside the span of x on those legs. The states x already holds keep their
-    weights, and P competes only for the rest. Returns ``(A, C, disc)`` with A (x0, x1, k) an isometry and C = A^H x
-    (k, rest of x), so x ~ A C. right=False: the same on the last two legs; returns
-    ``(B, C, disc)`` with B (k, x-2, x-1) and C = x B^H. `disc` is the norm^2 of x lost.
-    Singular values of x below `rel_tol` times the largest, and eigenvalues below `rel_tol`^2
-    times the largest, are dropped.
+    weights, and P competes only for the rest. Returns ``(A, C, disc)`` with A (x0, x1, k) an
+    isometry and C = A^H x (k, rest of x), so x ~ A C. right=False: the same on the last two
+    legs; returns ``(B, C, disc)`` with B (k, x-2, x-1) and C = x B^H. `disc` is the norm^2 of
+    x lost. Singular values of x below `rel_tol` times the largest, and eigenvalues below
+    `rel_tol`^2 times the largest, are dropped. On symmetric tensors `chi` counts multiplets,
+    ranked by their weight dim(c) lambda, so that with alpha = 0 the cut is the one of
+    `tnkit.symmetric_linalg.truncated_svd` on x.
     """
     s = "abcdefg"[:x.ndim]
     e = "abcdefg"[:extra.ndim]
@@ -167,7 +202,7 @@ def enriched_split(x, extra, alpha: float, chi: int, be, right: bool, rel_tol: f
         extra = extra - be.einsum(f"{k[2]}K,K{k[1]}->{e}", c, Q)
     rho = _gram(x, right, be) + _gram(extra, right, be) * alpha ** 2
     mat, rec = fuse(rho, ((0, 1), (2, 3)), be)
-    U, _, Vh = _top(mat, chi, be, rel_tol ** 2)
+    U, _, Vh = _top(mat, chi, be, rel_tol ** 2, density=True)
     if right:
         A = split(U, rec, be, legs=(0,))
         C = be.einsum(f"{s[:2]}K,{s}->K{s[2:]}", be.conj(A), x)

@@ -15,11 +15,12 @@ from typing import Any, Callable, Optional, Sequence
 
 import numpy as np
 
-from .blocks import BlockTensor, Leg, from_dense, random as random_blocks, tensordot
+from .blocks import (BlockTensor, Leg, from_dense, random as random_blocks, tensordot,
+                     truncated_svd, zeros as zeros_blocks)
 from .symmetry import Symmetry, U1
 
 __all__ = ["BlockBackend", "mpo_charges", "to_block_mpo", "random_block_mps", "to_block_mps",
-           "project_to_block_mps", "to_dense_mps"]
+           "project_to_block_mps", "to_dense_mps", "apply_block_mpo"]
 
 
 def _symmetry(sym: Symmetry, site_charges, where: str) -> Symmetry:
@@ -436,3 +437,62 @@ def to_dense_mps(mps: Sequence[BlockTensor], site_charges: Sequence[Sequence[Any
     bond legs in sector order."""
     return [t.to_dense((None, Leg.from_charges(q, sym=t.struct.sym)[1], None))
             for t, q in zip(mps, site_charges)]
+
+
+def _dense_backend(x):
+    """The dense backend of the buffer `x`: its torch device and dtype, or numpy."""
+    if type(x).__module__.split(".")[0] == "torch":
+        from .backend import TorchBackend
+        return TorchBackend(device=str(x.device), dtype=x.dtype)
+    from .backend import NumpyBackend
+    return NumpyBackend()
+
+
+def apply_block_mpo(mps: Sequence[BlockTensor], mpo: Sequence[BlockTensor], chi: int,
+                    svd_tol: float = 0.0):
+    """O|psi> for a block MPS and a block MPO on the same physical legs, compressed to at most
+    `chi` states per bond, as `tnkit.compress` compresses a dense state.
+
+    O is applied exactly (a zip-up that drops only singular values below 1e-14 of the largest),
+    which leaves the state left-canonical whatever the gauge of `mps`; one truncating SVD sweep
+    from the right then cuts each bond, `svd_tol` as in `truncated_svd`. The MPO is moved to
+    the dtype and device of `mps`. Returns the normalised, right-canonical state (`center` 0),
+    the norm of O|psi> before the cut, and ``1 - |<phi|phi'>|^2 / (<phi|phi> <phi'|phi'>)`` for
+    the exact phi = O|psi> and the result phi', which is the summed weight cut relative to
+    <phi|phi> (the cuts are nested projections). A charged MPO moves the total charge: the last
+    bond carries the old charge fused with that of the MPO's last channel. Raises if O|psi> is
+    zero, also when its charge sector is empty."""
+    from .expansion import zip_up
+    from .mps import MPS
+    if len(mps) != len(mpo):
+        raise ValueError(f"MPS of {len(mps)} sites, MPO of {len(mpo)}")
+    la, wl = mps[0].legs[0], mpo[0].legs[0]
+    if la.size != 1 or wl.size != 1:
+        raise ValueError("needs open ends: the first bond and MPO channel of size 1")
+    be = BlockBackend(_dense_backend(mps[0].data))
+    mpo = [be.array(W) for W in mpo]
+    sym = la.sym
+    k = Leg((sym.fuse(la.charges[0], wl.charges[0]),), (1,), 1, sym)
+    z = zeros_blocks((k, wl.flip(), la.flip()), sym.unit(), mps[0].data)
+    A, T = zip_up(mps, mpo, None, be, BlockTensor(z.struct, z.data + 1))
+    if T.legs[2].size != 1 or T.legs[3].size != 1:
+        raise ValueError("needs open ends: the last bond and MPO channel of size 1")
+    mat, rec = T.fuse(((0, 1), (2, 3)))                 # one column: the rest of the state
+    U, S, Vh, _ = truncated_svd(mat, 1)
+    X = U.split(rec, legs=(0,)) * (S[0] * Vh.data[0])   # (c, s, b), b labelled by the charge
+    norm = float(_host(S[0]))
+    if norm == 0:
+        raise ValueError("O|psi> = 0")
+    out, cut = [None] * len(A) + [None], 0.0
+    for i in range(len(A), 0, -1):
+        mat, rec = X.fuse(((0,), (1, 2)))
+        U, S, Vh, disc = truncated_svd(mat, chi, svd_tol=svd_tol)
+        cut += disc
+        out[i] = Vh.split(rec, legs=(1,))
+        X = tensordot(A[i - 1], U.scale(S, 1), ((2,), (0,)))
+    out[0] = X / float(_host(be.norm(X)))
+    return MPS(out, center=0), norm, cut / norm ** 2
+
+
+def _host(x) -> np.ndarray:
+    return x.detach().cpu().numpy() if hasattr(x, "detach") else np.asarray(x)

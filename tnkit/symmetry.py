@@ -16,8 +16,21 @@ Conventions:
 `U1`, `Zn` and their products are abelian: each pair of sectors fuses to exactly one sector,
 every sector has dimension 1, and the recoupling (F) and exchange (R) coefficients are 1 on
 allowed fusions. `SU2` is not (``fusion = "simple"``): a x b can hold several sectors, each once,
-and its coefficients and their conventions come from `tnkit.su2`. Block tensors accept only
-unique fusion so far.
+and its coefficients and their conventions come from `tnkit.su2`. Under ``fusion = "generic"`` a
+sector may appear N > 1 times in a x b, and each vertex a x b -> c carries a label mu < N. Block
+tensors accept only unique fusion so far.
+
+Coefficients with multiplicity (`cg_tensor`, `f_tensor` and `r_matrix` give arrays for every
+fusion style; an axis of length 0 marks a fusion that is not allowed):
+  * ``cg(a, b, c)[x, y, z, mu]`` = <a x; b y | c z, mu>, the splitting map c -> a x b. Under
+    unique and simple fusion `cg` has no mu axis. The maps intertwine the group action and the
+    coupling matrix of a x b, columns (c, mu, z), is unitary.
+  * ``F(a, b, c, d, e, f)[mu, nu, kappa, lam]``: the coefficients of
+    |((a b)_e^mu c)_d^nu> = sum F |(a (b c)_f^kappa)_d^lam>, axes in vertex order (a b -> e),
+    (e c -> d), (b c -> f), (a f -> d). A float without multiplicity.
+  * ``R(a, b, c)[mu, nu]``: cg(a, b, c)[x, y, :, mu] = sum_nu R[mu, nu] cg(b, a, c)[y, x, :, nu].
+  * Products flatten the multiplicity index factor-major, as states are flattened in `cg`.
+  * The cup of sector a is ``Z_a = sqrt(dim a) cg(a, dual(a), unit)``, a unitary matrix.
 
 Provisional: this module's API may change before 1.0.
 """
@@ -31,12 +44,14 @@ import numpy as np
 from . import su2
 
 Label = Hashable
+_STYLES = ("unique", "simple", "generic")
 
 
 class Symmetry:
     """The interface. Subclasses implement `unit`, `dual`, `fuse`, `label` and `sort_key`, and set
     `fusion` ("unique": every fusion a x b has exactly one outcome, i.e. abelian; "simple": a x b
-    may have several outcomes, each once)."""
+    may have several outcomes, each once; "generic": an outcome may appear several times, and
+    `fusions`, `dim`, `cg`, `F` and `R` must be overridden)."""
     fusion: Optional[str] = None
 
     def unit(self) -> Label:
@@ -60,6 +75,10 @@ class Symmetry:
     def fusions(self, a: Label, b: Label) -> Tuple[Tuple[Label, int], ...]:
         """The sectors in a x b with their multiplicities."""
         return ((self.fuse(a, b), 1),)
+
+    def multiplicity(self, a: Label, b: Label, c: Label) -> int:
+        """How often c appears in a x b."""
+        return dict(self.fusions(a, b)).get(c, 0)
 
     def total(self, labels: Iterable[Label], signs: Iterable[int]) -> Label:
         """The fusion of `labels`, each dualised where its sign is -1."""
@@ -86,9 +105,17 @@ class Symmetry:
         return np.full((1, 1, 1), 1.0 if c == self.fuse(a, b) else 0.0)
 
     def frobenius_schur(self, a) -> int:
-        """+1 or -1: the sign a sector picks up when its leg is bent twice. 1 for every abelian
-        sector, self-dual or not."""
+        """kappa_a = dim a F(a, dual(a), a, a, unit, unit). For a self-dual sector it is fixed by
+        the group, +1 or -1: the sign its leg picks up when bent twice. Otherwise it is a phase
+        set by the gauge of the cups, conj R(dual(a), a, unit); 1 in the gauge used here."""
         return 1
+
+    @property
+    def trivial_coefficients(self) -> bool:
+        """Unique fusion with every dimension, F, R and CG coefficient equal to 1 (the defaults
+        of this class, as for `U1` and `Zn`). Such a symmetry, or such a factor of a product,
+        never changes a recoupling matrix."""
+        return self.fusion == "unique" and not _overrides(self, Symmetry)
 
 
 @dataclass(frozen=True)
@@ -148,12 +175,12 @@ class ProductSymmetry(Symmetry):
     def __post_init__(self):
         if len(self.factors) < 2:
             raise ValueError("a product needs at least two factors")
-        if any(f.fusion not in ("unique", "simple") for f in self.factors):
-            raise NotImplementedError("only multiplicity-free factors are supported")
+        if any(f.fusion not in _STYLES for f in self.factors):
+            raise NotImplementedError("every factor needs a fusion style: " + ", ".join(_STYLES))
 
     @property
     def fusion(self):
-        return "unique" if all(f.fusion == "unique" for f in self.factors) else "simple"
+        return max((f.fusion for f in self.factors), key=_STYLES.index)
 
     def unit(self):
         return tuple(f.unit() for f in self.factors)
@@ -183,14 +210,21 @@ class ProductSymmetry(Symmetry):
         return int(np.prod([f.dim(x) for f, x in zip(self.factors, a)]))
 
     def F(self, a, b, c, d, e, f):
-        return float(np.prod([s.F(*x) for s, *x in zip(self.factors, a, b, c, d, e, f)]))
+        if self.fusion == "generic":
+            return _kron([f_tensor(s, *x) for s, *x in zip(self.factors, a, b, c, d, e, f)])
+        return _scalar(np.prod([s.F(*x) for s, *x in zip(self.factors, a, b, c, d, e, f)]))
 
     def R(self, a, b, c):
-        return float(np.prod([s.R(*x) for s, *x in zip(self.factors, a, b, c)]))
+        if self.fusion == "generic":
+            return _kron([r_matrix(s, *x) for s, *x in zip(self.factors, a, b, c)])
+        return _scalar(np.prod([s.R(*x) for s, *x in zip(self.factors, a, b, c)]))
 
     def cg(self, a, b, c):
         """The Kronecker product of the factors' arrays; flat index is factor-major (the first
-        factor's index most significant), as in `numpy.kron`."""
+        factor's index most significant), as in `numpy.kron`. The multiplicity axis, under generic
+        fusion, likewise."""
+        if self.fusion == "generic":
+            return _kron([cg_tensor(s, *x) for s, *x in zip(self.factors, a, b, c)])
         out = np.ones((1, 1, 1))
         for s, x, y, z in zip(self.factors, a, b, c):
             t = s.cg(x, y, z)
@@ -199,7 +233,25 @@ class ProductSymmetry(Symmetry):
         return out
 
     def frobenius_schur(self, a):
-        return int(np.prod([f.frobenius_schur(x) for f, x in zip(self.factors, a)]))
+        return _scalar(np.prod([f.frobenius_schur(x) for f, x in zip(self.factors, a)]))
+
+    @property
+    def trivial_coefficients(self):
+        return _plain_product(self) and all(f.trivial_coefficients for f in self.factors)
+
+
+_COEFFICIENTS = ("dim", "fusions", "multiplicity", "F", "R", "cg", "frobenius_schur")
+
+
+def _overrides(sym, base) -> bool:
+    """Whether the class of `sym` redefines a fusion rule or coefficient of `base`."""
+    return any(getattr(type(sym), m) is not getattr(base, m) for m in _COEFFICIENTS)
+
+
+def _plain_product(sym) -> bool:
+    """A `ProductSymmetry` whose fusion rules and coefficients are those of its factors: no
+    subclass redefines them."""
+    return isinstance(sym, ProductSymmetry) and not _overrides(sym, ProductSymmetry)
 
 
 @dataclass(frozen=True)
@@ -243,3 +295,64 @@ class SU2(Symmetry):
 
     def frobenius_schur(self, a):
         return -1 if a % 2 else 1
+
+
+# --------------------------------------------------------------------------- arrays, any style
+def _scalar(x):
+    """A product of coefficients: a float, or a complex number when the factors are complex."""
+    return complex(x) if np.iscomplexobj(x) else float(x)
+
+
+def _kron(arrays):
+    """Kronecker product of equal-rank arrays, axis by axis, the first array most significant."""
+    out = np.ones((1,) * arrays[0].ndim)
+    for t in arrays:
+        n = out.ndim
+        out = np.tensordot(out, t, axes=0).transpose(
+            [i for k in range(n) for i in (k, n + k)]).reshape(
+            [x * y for x, y in zip(out.shape, t.shape)])
+    return out
+
+
+def cg_tensor(sym: Symmetry, a, b, c) -> np.ndarray:
+    """`sym.cg(a, b, c)` with its multiplicity axis: shape (dim a, dim b, dim c, N)."""
+    if sym.fusion == "generic":
+        return sym.cg(a, b, c)
+    x = sym.cg(a, b, c)
+    return x[..., None] if sym.multiplicity(a, b, c) else np.zeros(x.shape + (0,))
+
+
+def f_tensor(sym: Symmetry, a, b, c, d, e, f) -> np.ndarray:
+    """`sym.F(a, b, c, d, e, f)` as an array of shape (N_ab^e, N_ec^d, N_bc^f, N_af^d)."""
+    if sym.fusion == "generic":
+        return sym.F(a, b, c, d, e, f)
+    n = (sym.multiplicity(a, b, e), sym.multiplicity(e, c, d), sym.multiplicity(b, c, f),
+         sym.multiplicity(a, f, d))
+    return np.full(n, sym.F(a, b, c, d, e, f))
+
+
+def r_matrix(sym: Symmetry, a, b, c) -> np.ndarray:
+    """`sym.R(a, b, c)` as an array of shape (N_ab^c, N_ba^c)."""
+    if sym.fusion == "generic":
+        return sym.R(a, b, c)
+    return np.full((sym.multiplicity(a, b, c), sym.multiplicity(b, a, c)), sym.R(a, b, c))
+
+
+def cup(sym: Symmetry, a) -> np.ndarray:
+    """Z_a = sqrt(dim a) cg(a, dual(a), unit): the invariant pairing of a with its dual, unitary.
+    The conjugate of Z_a maps the basis of dual(a) onto the dual basis of a."""
+    return np.sqrt(sym.dim(a)) * cg_tensor(sym, a, sym.dual(a), sym.unit())[:, :, 0, 0]
+
+
+def f_from_cg(sym: Symmetry, a, b, c, d, e, f) -> np.ndarray:
+    """F(a, b, c, d, e, f) from overlaps of CG trees at the first state of d; shape as
+    `f_tensor`. The source of F for symmetries defined by their CG arrays."""
+    left = np.einsum("xyeu,ezv->xyzuv", cg_tensor(sym, a, b, e), cg_tensor(sym, e, c, d)[:, :, 0])
+    right = np.einsum("yzfk,xfl->xyzkl", cg_tensor(sym, b, c, f), cg_tensor(sym, a, f, d)[:, :, 0])
+    return np.einsum("xyzkl,xyzuv->uvkl", right.conj(), left)
+
+
+def r_from_cg(sym: Symmetry, a, b, c) -> np.ndarray:
+    """R(a, b, c) from overlaps of CG arrays at the first state of c; shape as `r_matrix`."""
+    return np.einsum("yxv,xyu->uv", cg_tensor(sym, b, a, c)[:, :, 0].conj(),
+                     cg_tensor(sym, a, b, c)[:, :, 0])

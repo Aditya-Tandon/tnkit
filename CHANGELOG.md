@@ -3,7 +3,77 @@
 Notable changes to `tnkit`. Versions follow [semantic versioning](https://semver.org), written
 in Python's form for pre-releases (`0.2.0rc1`).
 
-## [Unreleased]
+## [0.3.0] — 2026-11-24
+
+### Added
+
+- `tnkit.thermal`: thermal states by purification on fused system-ancilla sites. The
+  infinite-temperature state, optionally restricted to one charge sector; imaginary-time TDVP
+  with `log Z` (`cool`, `thermal_state`); purified operators and MPOs, including the twin MPO
+  `H x 1 - 1 x H^T` for real-time evolution with backward-evolved ancillas. Matches exact
+  diagonalisation to 1e-8 in energy, `log Z` and local magnetisation on a 6-site Ising chain
+  and an 8-site Schwinger chain (zero-charge sector), and in real time on 6 sites.
+- `models_lgt.schwinger_charges`: the charge of each basis state, for charge sectors.
+- `TDVPEvolver` accepts a complex step (imaginary time). Real steps run the same code as before.
+- `tnkit.thermal` in block tensors under U(1) x U(1) (`PURIFIED`), with the physical and the
+  ancilla charge conserved separately: `blocks=True` in `infinite_temperature_state` and
+  `thermal_state`, `charges=` in `purify_mpo` (both forms) and `cool`, and `purified_charges`
+  for `to_dense_mps`. Matches the dense path to 1e-10 in energy, `log Z`, entropy and local
+  magnetisation on an 8-site Schwinger chain, and in real time with backward twins and a packet
+  on 6 sites, when no cap is reached and `svd_tol` is small (1e-12 there). A cut inside a pair
+  of equal singular values, or a dense state leaking out of its charge sector at a loose
+  `svd_tol`, makes the two differ; `degenerate_tol` (passed to `cool` and `thermal_state`)
+  keeps such pairs whole on both. Dense results are unchanged bit for bit.
+- `block_backend.apply_block_mpo`: an MPO applied to a block MPS on the state's backend, then
+  compressed as `compress` compresses a dense state; returns the norm of O|psi> and the exact
+  infidelity of the cut.
+- `tnkit.symmetric_tensor`, `tnkit.symmetric_linalg` and `tnkit.symmetric_backend`
+  (provisional, not exported): tensors that commute with any symmetry `tnkit.symmetry`
+  describes, non-abelian ones such as SU(2) and U(1) x SU(2) included, stored as one reduced
+  matrix per coupled sector over fusion trees (`tnkit.fusion_trees`). Permute, contract, fuse
+  and split recouple with F and R symbols, never with dense trees; SVD, truncated SVD and QR act
+  per coupled sector, and bond caps count multiplets. `SymmetricBackend` runs the two-site DMRG
+  and TDVP drivers on them, and `symmetric_mpo` reduces a dense MPO that commutes with the
+  symmetry. Checked against dense arrays and exact diagonalisation, and against stored TensorKit
+  values (below). Dense and block results are unchanged bit for bit.
+- `tnkit.symmetry`: generic fusion, where an outcome may appear more than once and each vertex
+  carries a multiplicity label; `cg_tensor`, `f_tensor`, `r_matrix` and `cup` read any fusion
+  style as arrays.
+- `models_lgt2f.site_spaces_2f`: the two-flavour site under U(1) x SU(2).
+- Limits for the caches of symmetric tensors, set through `TNKIT_SYMMETRIC_*` environment
+  variables (see the environment guide).
+- `dmrg_excited.mps_inner`, `mpo_expectation`, `mpo_sq_expectation` and `mpo_variance` take
+  block and symmetric MPSs (provisional). When the last bond holds a multiplet, `mps_inner` sums
+  over its states and normalised quantities are those of one state. Dense results are unchanged
+  bit for bit.
+- `symmetric_backend.save_mps` and `load_mps`: a symmetric MPS in one `.npz` (buffers, leg
+  spaces, symmetry), loaded onto any dense backend (provisional).
+- `dmrg_excited` takes block and symmetric MPOs (provisional): `charge=` or a block
+  `init_mps`, as in `dmrg`, with `chi` in multiplets on symmetric tensors; so does `dmrg_tower`
+  without `pair_solve` or a time budget. New settings `time_budget_s` and `start_noise` (both
+  off by default); `info` gains `converged`, `cut`, `expand` (0), `sweep_s`, `wall_s`,
+  `max_bond`, `max_bond_dense`, and on block and symmetric tensors `charge` and `last_bond`.
+  `DMRGExcitedOptions().eig_max_iter` is now `None`: 100 on dense MPOs, as before, and
+  min(block size, max(200, 4 chi)) on block and symmetric ones. Dense results are unchanged
+  bit for bit.
+
+### Changed
+
+- Development, CI and the documentation build use uv and a committed `uv.lock`; `pip install
+  tnkit` is unchanged.
+- On GPUs, symmetric tensors build their recoupling maps on the device: a symmetric TDVP step
+  at bond dimension 512 ran about 1.9x faster on a MIG slice, with identical results.
+
+### Fixed
+
+- `TNKIT_CHECK=debug` no longer fails with `AttributeError` on block and symmetric tensors
+  with torch buffers.
+
+### Tests
+
+- Cross-checks of the symmetric code against values stored from TensorKit 0.17.2 and MPSKit
+  0.14.0: SU(2) Clebsch-Gordan, F and R symbols, sector ground-state energies, middle-bond
+  singular values and two-site TDVP after a quench. Julia is not needed to run them.
 
 ## [0.2.0] — 2026-11-10
 

@@ -26,3 +26,14 @@ def pytest_configure(config):
             "Every torch-backend test would fail with the raw error above; "
             "failing the session once here instead."
         )
+
+
+@pytest.fixture
+def no_implicit_host_copy(monkeypatch):
+    """torch tensors refuse implicit numpy conversion, as CUDA tensors do; the backends'
+    explicit `to_numpy` still works."""
+    torch = pytest.importorskip("torch")
+
+    def refuse(self, *args, **kwargs):
+        raise TypeError("implicit numpy conversion of a torch tensor (fails on CUDA)")
+    monkeypatch.setattr(torch.Tensor, "__array__", refuse)

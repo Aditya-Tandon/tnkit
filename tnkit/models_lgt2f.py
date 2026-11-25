@@ -161,6 +161,26 @@ def site_charges_2f(N: int) -> list[np.ndarray]:
     return out
 
 
+def site_spaces_2f(N: int):
+    """Per staggered site, the `tnkit.symmetric_backend.SiteSpace` of the d = 4 site of
+    `merge_pairs` under U(1) x SU(2): labels (q, 2I) with the staggered charge q of the site.
+    Sectors (q0, 0) empty, (q0 + 1, 1/2) the doublet (c+_u|0>, c+_d|0>), (q0 + 2, 0) doubly
+    occupied, with q0 = -[n odd] * 2. In the merged basis 2 s_u + s_d the doublet is (2, 1); the
+    in-site Jordan-Wigner string of the compiler, c_d = (1 - 2 n_u) a_d, makes it a standard
+    doublet with no sign: c+_d|0> = a+_d|0>."""
+    from .symmetric_backend import SiteSpace
+    from .symmetric_tensor import Space
+    from .symmetry import SU2, U1, ProductSymmetry
+    sym = ProductSymmetry((U1(), SU2()))
+    U = np.zeros((4, 4))
+    U[[0, 1, 2, 3], [0, 2, 1, 3]] = 1.0          # |0>, (u, d), |ud>
+    out = []
+    for n in range(N):
+        q0 = -2 * (n % 2)
+        out.append(SiteSpace(Space(sym, [(q0, 0), (q0 + 1, 1), (q0 + 2, 0)], (1, 1, 1)), U))
+    return out
+
+
 def unpack_charge(c, N: int):
     """(q, 2 I_z) from packed charges c (`site_charges_2f`)."""
     K = charge_base(N)

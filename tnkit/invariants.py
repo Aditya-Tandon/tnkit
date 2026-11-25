@@ -10,7 +10,9 @@ broadcasts a size-1 index against any size, so an outer bond that breaks this ru
 not fail on its own: it gives wrong numbers.
 
 The checks read shapes only (host metadata on every backend, no device synchronisation).
-They cannot see a transposed tensor whose dimensions happen to coincide.
+They cannot see a transposed tensor whose dimensions happen to coincide. On symmetric tensors
+(`tnkit.symmetric_tensor`) a leg's size is its number of multiplets, so an outer bond of 1 is one
+multiplet of any dimension.
 
 `TNKIT_CHECK` sets where they run:
     entry (default)  once per call of a solver front door
@@ -25,11 +27,18 @@ list that should already be cast.
 from __future__ import annotations
 
 import os
-from operator import attrgetter, itemgetter
+from operator import itemgetter
 from typing import Any, Optional, Sequence
 
 MODES = ("entry", "debug", "off")
-_SHAPE = attrgetter("shape")
+
+
+def _leg_sizes(t):
+    """Dense leg sizes; multiplets per leg on a symmetric tensor."""
+    legs = getattr(t, "codomain", None)
+    if legs is None:
+        return t.shape
+    return tuple(sum(V.degeneracies) for V in legs + t.domain)
 
 
 class InvariantError(ValueError):
@@ -45,7 +54,7 @@ def mode() -> str:
 
 
 def _shapes(ts: Sequence[Any], rank: int, what: str):
-    shapes = list(map(_SHAPE, ts))
+    shapes = list(map(_leg_sizes, ts))
     if not shapes:
         raise InvariantError(f"{what} is empty")
     if set(map(len, shapes)) != {rank}:
@@ -65,6 +74,8 @@ def _chain(shapes, out_ax: int, in_ax: int, what: str) -> None:
 
 
 def _family(t: Any) -> str:
+    if getattr(t, "is_block", False):                                # block or symmetric
+        t = t.data
     if hasattr(t, "is_complex") and hasattr(t, "device"):          # torch
         return f"torch {'complex' if t.is_complex() else 'real'} on {t.device}"
     return f"numpy {'complex' if t.dtype.kind == 'c' else 'real'} on cpu"

@@ -39,3 +39,23 @@ selector at <https://pytorch.org>, then `pip install -e .`.
 backend.
 
 To run the test suite, install the `test` extra and run `pytest tests/`.
+
+## Developing with uv
+
+The repository's development environment is managed with [uv](https://docs.astral.sh/uv/):
+`uv.lock` pins every package, for Linux x86_64 and macOS on Apple silicon, and
+`.python-version` selects Python 3.11. From a clone:
+
+```bash
+uv sync --extra torch     # tnkit (editable), the test tools and torch
+uv run pytest
+```
+
+`uv sync` alone leaves torch out. On Linux, `--extra torch` installs the CPU-only torch wheel.
+For an NVIDIA GPU, `--extra cuda` installs instead the CUDA 13.2 build from
+<https://download.pytorch.org/whl/cu132>, which needs an NVIDIA driver recent enough for
+CUDA 13; the two extras cannot be combined. On macOS both install PyPI's wheel. `uv sync --group docs` adds the
+documentation build (see `docs/BUILD.md`).
+
+After changing the version or the dependencies in `pyproject.toml`, run `uv lock` and commit
+`uv.lock`; CI fails if the lock is out of date.

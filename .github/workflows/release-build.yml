@@ -40,18 +40,22 @@ jobs:
           [ "$GITHUB_REF" = "refs/tags/v$v" ] || { echo "::error::run from tag v$v, not $GITHUB_REF"; exit 1; }
           grep -q "^## \[$v\]" CHANGELOG.md || { echo "::error::no CHANGELOG heading for $v"; exit 1; }
 
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.13.9"
+          enable-cache: false
+
       - name: Build
+        # --no-sources: build as pip would, without the [tool.uv] sources in pyproject.toml.
         run: |
-          python -m pip install --upgrade pip
-          pip install build twine
-          python -m build
+          uv build --no-sources
           ls -l dist
 
       - name: Check the distributions
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          twine check --strict dist/*
+          uvx twine check --strict dist/*
           python - <<'EOF'
           import os, tarfile, zipfile
           v = os.environ["VERSION"]

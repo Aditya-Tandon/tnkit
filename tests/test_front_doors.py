@@ -139,6 +139,13 @@ def test_dmrg_excited_options_match_flat_bit_for_bit():
     for other in (grouped, mixed):
         assert other[0] == flat[0]
         assert all(np.array_equal(a, b) for a, b in zip(flat[1], other[1]))
+    new = dict(start_noise=1e-3, time_budget_s=1e6, eig_max_iter=50)
+    flat = dmrg_excited(W, 8, prev_states=[gs], n_sweeps=3, seed=4, **new)
+    grouped = dmrg_excited(W, 8, DMRGExcitedOptions(prev_states=[gs], n_sweeps=3, seed=4, **new))
+    plain = dmrg_excited(W, 8, prev_states=[gs], n_sweeps=3, seed=4)
+    assert grouped[0] == flat[0] and all(np.array_equal(a, b) for a, b in zip(flat[1], grouped[1]))
+    assert not all(np.array_equal(a, b) for a, b in zip(plain[1], grouped[1]))   # the noise acts
+    assert DMRGExcitedOptions().eig_max_iter is None and DMRGExcitedOptions().charge is None
     with pytest.raises(TypeError, match="options must be"):
         dmrg_excited(W, 8, [gs])                          # old positional prev_states
     with pytest.raises(TypeError, match="unexpected keyword"):

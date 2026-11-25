@@ -32,12 +32,13 @@ reports the residual overlaps so the choice can be checked rather than assumed.
 from __future__ import annotations
 
 import dataclasses
+import math
 import time
 from typing import Any, Optional, Sequence
 
 import numpy as np
 
-from .backend import get_backend
+from .backend import NumpyBackend, get_backend
 from . import _options
 from . import invariants
 from . import linalg as tl
@@ -45,7 +46,16 @@ from .eigensolver import (block_lowk, check_reorth_periodic, lanczos_ground,
                           lanczos_ground_restart)
 from .mps import MPS
 from .observables import _backend_for
+from .block_backend import BlockBackend, _dense_backend, random_block_mps
+from .blocks import BlockTensor, Leg, from_dense as _block_from_dense
+from .legs import fuse, split
+from .symmetric_backend import SymmetricBackend, random_symmetric_mps
+from .symmetric_tensor import SymmetricTensor, from_dense as _sym_from_dense
+from ._sparse import linalg_of, symmetry_of
 from ._dmrg import (
+    _block_backend,
+    _check_sector,
+    _edge_envs,
     _truncate,
     apply_one_site,
     apply_two_site,
@@ -62,25 +72,117 @@ __all__ = ["mpo_expectation", "mpo_sq_expectation", "mpo_variance", "two_site_va
 _NP = get_backend("numpy")
 
 
+def _now():
+    return time.perf_counter()
+
+
+def _same_kind(a, b):
+    """Raise if one operand holds block or symmetric tensors and the other does not hold the
+    same type."""
+    x, y = a[0], b[0]
+    if (getattr(x, "is_block", False) or getattr(y, "is_block", False)) and type(x) is not type(y):
+        raise TypeError(f"{type(x).__name__} with {type(y).__name__} tensors: both operands "
+                        "need the same tensor type")
+
+
+def _sparse_backend(mps, be):
+    """The adaptor for a block or symmetric MPS: `be` if it is one, else the `BlockBackend` or
+    `SymmetricBackend` around `be` or the dense backend of the MPS's buffers."""
+    kind = type(mps[0])
+    wrap = SymmetricBackend if kind is SymmetricTensor else BlockBackend
+    if isinstance(be, wrap):
+        return be
+    if isinstance(be, (BlockBackend, SymmetricBackend)):
+        raise ValueError(f"{kind.__name__} operands need a {wrap.__name__}")
+    return wrap(be or _dense_backend(mps[0].data))
+
+
+def _edges(mps, mpo, n, be):
+    """Open-boundary environments of a block or symmetric MPS: the identity on each outer bond
+    (on every state of its multiplet), with `n` outer MPO channels between bra and ket."""
+    A, B = mps[0], mps[-1]
+    if isinstance(A, SymmetricTensor):
+        ends = ((A.codomain[0], mpo and mpo[0].codomain[0].dual()),
+                (B.codomain[2], mpo and mpo[-1].codomain[1].dual()))
+        out = []
+        for v, w in ends:
+            x = be.dense.array(np.eye(v.dim).reshape((v.dim,) + (1,) * n + (v.dim,)))
+            out.append(_sym_from_dense(x, (v,) + (w,) * n + (v.dual(),), (), be.dense)[0])
+        return out
+    ends = ((A.legs[0], mpo and mpo[0].legs[0].flip()),
+            (B.legs[2], mpo and mpo[-1].legs[1].flip()))
+    out = []
+    for v, w in ends:
+        x = be.dense.array(np.eye(v.size).reshape((v.size,) + (1,) * n + (v.size,)))
+        out.append(_block_from_dense(x, (v,) + (w,) * n + (v.flip(),))[0])
+    return out
+
+
+def _last_bond(M):
+    return M[-1].codomain[2] if isinstance(M[-1], SymmetricTensor) else M[-1].legs[2]
+
+
+def _layout(t):
+    """What fixes the buffer layout of a canonical block or symmetric tensor."""
+    return (t.codomain, t.domain) if isinstance(t, SymmetricTensor) else (t.legs, t.charge)
+
+
+def _close(F, R, be):
+    """The scalar of a left environment `F`: its one element (dense), or `F` contracted with
+    the right edge `R`."""
+    if R is None:
+        return F.reshape(-1)[0]
+    legs = "abcd"[:F.ndim]
+    return be.einsum(f"{legs},{legs}->", F, R)
+
+
 def mps_inner(A, B, be=None):
-    """<A|B> for two MPS in (left, phys, right) order, arbitrary gauge."""
-    be = be or _NP
-    E = be.ones((1, 1))
+    """<A|B> for two MPS in (left, phys, right) order, arbitrary gauge.
+
+    ``be``: for dense MPSs it defaults to numpy in complex128 (kept so that dense results stay
+    as they were). Block and symmetric MPSs run on the `BlockBackend` or `SymmetricBackend`
+    around ``be`` (or ``be`` itself if it is that adaptor), by default around the dense backend
+    of their buffers: numpy in complex128, or torch on their device in their dtype. Both MPSs
+    must end on the same bond. When the last bond holds a multiplet of dimension d > 1, <A|B>
+    sums over its d states, as the DMRG environments do, so every normalised quantity is that
+    of one state of the multiplet."""
+    _same_kind(A, B)
+    sparse = getattr(A[0], "is_block", False)
+    if sparse:
+        be = _sparse_backend(A, be)
+        if _last_bond(A) != _last_bond(B):
+            raise ValueError(f"the two MPSs end on different bonds: {_last_bond(A)} and "
+                             f"{_last_bond(B)}")
+        E, R = _edges(A, None, 0, be)
+    else:
+        be = be or _NP
+        E, R = be.ones((1, 1)), None
     for a, b in zip(A, B):
         E = be.einsum("ax,asb->xsb", E, be.conj(a))
         E = be.einsum("xsb,xsy->by", E, b)
-    return be.to_scalar(E.reshape(-1)[0])
+    return be.to_scalar(_close(E, R, be))
+
+
+def _observable_backend(mps, mpo, be):
+    _same_kind(mps, mpo)
+    if getattr(mps[0], "is_block", False):
+        return _sparse_backend(mps, be)
+    return be or _backend_for(mps)
 
 
 def mpo_expectation(mps, mpo, be=None):
     """<psi|W|psi> / <psi|psi> for an MPS and an MPO (bra/ket the same state).
 
-    ``be`` defaults to the backend the MPS lives on."""
-    be = be or _backend_for(mps)
-    F = be.ones((1, 1, 1))
+    ``be`` defaults to the backend the MPS lives on (numpy arrays: numpy in complex128); block
+    and symmetric tensors as in `mps_inner`."""
+    be = _observable_backend(mps, mpo, be)
+    if getattr(mps[0], "is_block", False):
+        F, R = _edges(mps, mpo, 1, be)
+    else:
+        F, R = be.ones((1, 1, 1)), None
     for A, W in zip(mps, mpo):
         F = update_left_env(F, A, be.array(W), be)
-    num = be.to_scalar(F.reshape(-1)[0])
+    num = be.to_scalar(_close(F, R, be))
     return num / mps_inner(mps, mps, be)
 
 
@@ -89,16 +191,19 @@ def mpo_sq_expectation(mps, mpo, be=None):
 
     The environment carries (bra, upper MPO, lower MPO, ket) bonds, so memory is
     chi^2 D^2 and the cost is O(N (chi^3 D^2 d + chi^2 D^3 d^2)).
-    ``be`` defaults to the backend the MPS lives on."""
-    be = be or _backend_for(mps)
-    F = be.ones((1, 1, 1, 1))
+    ``be`` as in `mpo_expectation`."""
+    be = _observable_backend(mps, mpo, be)
+    if getattr(mps[0], "is_block", False):
+        F, R = _edges(mps, mpo, 2, be)
+    else:
+        F, R = be.ones((1, 1, 1, 1)), None
     for A, Wx in zip(mps, mpo):
         W = be.array(Wx)
         t = be.einsum("pvwq,psd->vwqsd", F, be.conj(A))
         t = be.einsum("vwqsd,vrst->wqdrt", t, W)
         t = be.einsum("wqdrt,wmty->qdrmy", t, W)
         F = be.einsum("qdrmy,qye->drme", t, A)
-    num = be.to_scalar(F.reshape(-1)[0])
+    num = be.to_scalar(_close(F, R, be))
     return num / mps_inner(mps, mps, be)
 
 
@@ -108,8 +213,9 @@ def mpo_variance(mps, mpo, be=None):
     By the Weinstein bound some eigenvalue of W lies within sqrt(var) of <W>, so this
     certifies convergence without a reference spectrum. It cannot detect a state that
     converged onto an eigenvalue already found. ``floor`` = eps * max(|<W^2>|, 1) is the
-    round-off level of the difference: a ``var`` at or below it is unresolved."""
-    be = be or _backend_for(mps)
+    round-off level of the difference: a ``var`` at or below it is unresolved. ``be`` as in
+    `mpo_expectation`."""
+    be = _observable_backend(mps, mpo, be)
     e2 = float(np.real(mpo_sq_expectation(mps, mpo, be)))
     e1 = float(np.real(mpo_expectation(mps, mpo, be)))
     floor = float(np.finfo(np.float64).eps * max(abs(e2), 1.0))
@@ -156,7 +262,10 @@ def two_site_variance(mps, mpo, be=None):
 
     Cost: one-site and two-site H_eff applications, one QR per site, and one right
     canonicalisation, O(N chi^3 D d^2): about 8x `mpo_expectation` (numpy, N = 60, chi = 32-128,
-    D = 5). ``be`` defaults to the backend the MPS lives on."""
+    D = 5). ``be`` defaults to the backend the MPS lives on. Dense MPSs only."""
+    if getattr(mps[0], "is_block", False) or getattr(mpo[0], "is_block", False):
+        raise TypeError("two_site_variance takes a dense MPS and MPO: convert block or "
+                        "symmetric ones with their to_dense_mps")
     be = be or _backend_for(mps)
     W = [be.array(w) for w in mpo]
     M = right_canonicalize([be.array(t) for t in mps], be)
@@ -188,17 +297,21 @@ def two_site_variance(mps, mpo, be=None):
     return var1, var2
 
 
-def _overlap_envs(M, P, be):
+def _overlap_envs(M, P, be, edges=None):
     """Left/right overlap environments between the current MPS ``M`` and a fixed ``P``.
 
     ``EL[i][a,x]`` contracts sites 0..i-1 (conjugated on the M side);
-    ``ER[i][a,x]`` contracts sites i..N-1.
+    ``ER[i][a,x]`` contracts sites i..N-1. ``edges``: the two outer environments (default
+    the 1 x 1 identity).
     """
     N = len(M)
     EL = [None] * (N + 1)
     ER = [None] * (N + 1)
-    EL[0] = be.ones((1, 1))
-    ER[N] = be.ones((1, 1))
+    if edges is None:
+        EL[0] = be.ones((1, 1))
+        ER[N] = be.ones((1, 1))
+    else:
+        EL[0], ER[N] = edges
     for i in range(N - 1, -1, -1):
         t = be.einsum("asb,by->asy", be.conj(M[i]), ER[i + 1])
         ER[i] = be.einsum("asy,xsy->ax", t, P[i])
@@ -268,7 +381,9 @@ def _lifted(h, proj, starts, margin, be):
 
 @dataclasses.dataclass
 class DMRGExcitedOptions:
-    """Settings of `dmrg_excited`, with the defaults of its old flat signature."""
+    """Settings of `dmrg_excited`, with the defaults of its old flat signature. The Krylov cap
+    `eig_max_iter=None` is 100 on dense MPOs, as before, and min(block size, max(200, 4 chi)) on
+    block and symmetric ones, as in `dmrg`."""
     prev_states: Sequence[Any] = ()
     penalty: float = 1.0
     n_sweeps: int = 12
@@ -279,18 +394,37 @@ class DMRGExcitedOptions:
     init_mps: Optional[Any] = None
     backend: Any = "auto"
     verbose: bool = False
-    eig_max_iter: int = 100
+    eig_max_iter: Optional[int] = None
     reorth: str = "full"
     eig: str = "lanczos-restart"
     restart_m: int = 40
     restart_k: int = 10
     reorth_alg: str = "cgs2"
     deflate: str = "penalty"
+    charge: Any = None
+    time_budget_s: Optional[float] = None
+    start_noise: float = 0.0
 
 
 def _dense_only(mpo, name):
     if getattr(next(iter(mpo), None), "is_block", False):
-        raise ValueError(f"{name} takes a dense MPO; block tensors run in dmrg only")
+        raise ValueError(f"{name} takes a dense MPO; block and symmetric tensors run in dmrg, "
+                         "dmrg_excited and dmrg_tower without pair_solve")
+
+
+def _bonds(M):
+    """The inner bonds of an MPS as (multiplets or states, dense states) pairs."""
+    if isinstance(M[0], SymmetricTensor):
+        return [(sum(m.codomain[2].degeneracies), m.codomain[2].dim) for m in M[:-1]]
+    n = [m.legs[2].size if isinstance(m, BlockTensor) else int(m.shape[2]) for m in M[:-1]]
+    return [(k, k) for k in n]
+
+
+def _sectors(V):
+    """{"sectors": ..., "degeneracies": ...} of one leg of a block or symmetric tensor."""
+    if isinstance(V, Leg):
+        return {"sectors": list(V.charges), "degeneracies": list(V.dims)}
+    return {"sectors": list(V.sectors), "degeneracies": list(V.degeneracies)}
 
 
 def dmrg_excited(mpo, chi, options=None, **legacy_kwargs):
@@ -329,8 +463,31 @@ def dmrg_excited(mpo, chi, options=None, **legacy_kwargs):
         object | 'auto'. Default 'auto': real dtype when `mpo` (and
         `init_mps`, if given) are real, complex otherwise. Pass backend='numpy' for the
         old complex-always default.
+    time_budget_s : seconds from the call, or None (no limit). No sweep starts that the
+        longest sweep so far says would end after it; the first sweep always runs. A run
+        stopped this way has ``info["cut"]``. NaN raises.
+    start_noise : > 0 adds a random vector of this norm, relative to the start vector's, to
+        each local start vector of the first sweep. A start can have no weight on a level
+        (for instance by a symmetry the tensors do not carry), and then cannot find it; the
+        noise gives it some. 0 (default): no noise.
+
+    Block and symmetric MPOs (provisional) run as in `dmrg`: exactly one of ``charge`` (the
+    total sector) and a block or symmetric ``init_mps``; ``backend`` names the dense backend
+    under the tensors, or is a `BlockBackend` or `SymmetricBackend`; ``trunc='svd'`` only, and
+    no subspace expansion; on symmetric tensors ``chi`` counts multiplets. ``prev_states`` are
+    MPSs of the same tensor type in the same sector (another sector raises), taken at unit
+    norm. When that sector is a multiplet of dimension d > 1, the penalty and the overlaps are
+    those of one state of it.
+
+    ``info`` reports ``sweeps``, the penalised energy per sweep (``energies``) and its last
+    value (``E_penalised``), ``penalty_overlaps`` (|<psi_i|M>| per previous state),
+    ``discarded_weight``, ``eig_time``, ``converged`` (the last sweep changed the penalised
+    energy by less than ``tol``), ``cut``, ``expand`` (always 0: no subspace expansion),
+    seconds per sweep ``sweep_s`` and for the call ``wall_s``, and the largest bond in the
+    units of ``chi`` (``max_bond``) and in dense states (``max_bond_dense``); block and
+    symmetric runs add the last bond's ``last_bond`` (sectors and degeneracies) and
+    ``charge``, its sector (None if it holds more than one).
     """
-    _dense_only(mpo, "dmrg_excited")
     o = _options.resolve(DMRGExcitedOptions, options, legacy_kwargs, "dmrg_excited")
     tl.warn_if_deprecated(o.trunc)
     return _dmrg_excited(mpo, chi, **{f.name: getattr(o, f.name)
@@ -339,8 +496,10 @@ def dmrg_excited(mpo, chi, options=None, **legacy_kwargs):
 
 def _dmrg_excited(mpo, chi, *, prev_states, penalty, n_sweeps, tol, eig_tol, trunc, seed,
                   init_mps, backend, verbose, eig_max_iter, reorth, eig, restart_m,
-                  restart_k, reorth_alg, deflate):
-    """The solver; `dmrg_excited` documents it."""
+                  restart_k, reorth_alg, deflate, charge, time_budget_s, start_noise):
+    """The solver; `dmrg_excited` documents it. Block and symmetric tensors take the branches
+    marked `block`: the local problem is solved on the flat buffer of the canonical block."""
+    t_call = _now()
     if eig not in ("lanczos", "lanczos-restart"):
         raise ValueError(f"eig must be 'lanczos' or 'lanczos-restart', got {eig!r}")
     if deflate not in ("penalty", "project"):
@@ -352,63 +511,103 @@ def _dmrg_excited(mpo, chi, *, prev_states, penalty, n_sweeps, tol, eig_tol, tru
     # refused up front here, once, for parity with the "lanczos" path.
     if eig == "lanczos-restart":
         check_reorth_periodic(reorth, "residual")
+    if not start_noise >= 0:
+        raise ValueError(f"start_noise must be >= 0, got {start_noise!r}")
+    if time_budget_s is not None and math.isnan(time_budget_s):
+        raise ValueError("time_budget_s must be a number of seconds or None, got nan")
     prev_states = list(prev_states)
+    block = _check_sector(mpo, charge, init_mps, trunc, eig)
+    for P in prev_states:
+        _same_kind(P, mpo)
     invariants.entry(init_mps, mpo)
     for P in prev_states:
         invariants.entry(P, mpo)
-    be = get_backend(backend, mpo=mpo, init_mps=init_mps)
+    be = (_block_backend(backend, mpo, init_mps) if block
+          else get_backend(backend, mpo=mpo, init_mps=init_mps))
+    fb = be.dense if block else be               # the backend of flat block buffers
     N = len(mpo)
     d = mpo[0].shape[2]
     W = [be.array(x) for x in mpo]
     prev = [[be.array(x) for x in P] for P in prev_states]
+    if block:                       # the penalty and the overlaps take each one at unit norm
+        for P in prev:
+            P[0] = P[0] / float(np.sqrt(mps_inner(P, P, be).real))
 
     if init_mps is not None:
         M = right_canonicalize([be.array(m) for m in init_mps], be)
+    elif block:
+        start = random_symmetric_mps if isinstance(W[0], SymmetricTensor) else random_block_mps
+        M = right_canonicalize(start(W, chi, be.dense, charge, np.random.default_rng(seed)), be)
     else:
         M = right_canonicalize(random_mps(N, chi, d, np.random.default_rng(seed), be), be)
+    if block:
+        for k, P in enumerate(prev):
+            if _last_bond(P) != _last_bond(M):
+                raise ValueError(f"prev_states[{k}] ends on {_last_bond(P)}, not on the target "
+                                 f"sector's {_last_bond(M)}")
+    if eig_max_iter is None:
+        eig_max_iter = max(200, 4 * chi) if block else 100
 
     L = [None] * (N + 1)
     R = [None] * (N + 1)
-    L[0] = be.ones((1, 1, 1))
-    R[N] = be.ones((1, 1, 1))
+    L[0], R[N] = _edge_envs(M, W, be)
     for i in range(N - 1, 0, -1):
         R[i] = update_right_env(R[i + 1], M[i], W[i], be)
 
+    edges = _edges(M, None, 0, be) if block else None
     ELs, ERs = [], []
     for P in prev:
-        el, er = _overlap_envs(M, P, be)
+        el, er = _overlap_envs(M, P, be, edges)
         ELs.append(el)
         ERs.append(er)
 
     rng = np.random.default_rng(seed + 1)
+    noise_rng = np.random.default_rng(seed + 2) if start_noise else None
     energies = []
     total_disc = 0.0
     t_eig = 0.0
     fallbacks = 0
 
-    def solve_block(i, direction):
+    def solve_block(i, direction, noise):
         nonlocal total_disc, t_eig, fallbacks
         W1, W2 = W[i], W[i + 1]
         Li, Ri = L[i], R[i + 2]
-        a, s1 = M[i].shape[0], M[i].shape[1]
-        s2, b = M[i + 1].shape[1], M[i + 1].shape[2]
         theta0 = be.einsum("asc,ctb->astb", M[i], M[i + 1])
-        shape = tuple(int(x) for x in theta0.shape)
-        dim = int(np.prod(shape))
+        if block:
+            theta0 = theta0.canonical()
+            wrap = (theta0.with_data if isinstance(theta0, SymmetricTensor)
+                    else (lambda x, s=theta0.struct: BlockTensor(s, x)))
+            v0 = theta0.data
+            dim = int(v0.shape[0])
+            Vs = []
+            for j, P in enumerate(prev):
+                v = _block_vector(ELs[j][i], P[i], P[i + 1], ERs[j][i + 2], be).canonical()
+                if _layout(v) != _layout(theta0):
+                    raise RuntimeError("a block vector and the block differ in their legs")
+                Vs.append(v.data)
 
-        Vs = [
-            _block_vector(ELs[j][i], P[i], P[i + 1], ERs[j][i + 2], be).reshape(-1)
-            for j, P in enumerate(prev)
-        ]
+            def h(x):
+                return apply_two_site(wrap(x), Li, W1, W2, Ri, be).canonical().data
+        else:
+            a, s1 = M[i].shape[0], M[i].shape[1]
+            s2, b = M[i + 1].shape[1], M[i + 1].shape[2]
+            shape = tuple(int(x) for x in theta0.shape)
+            dim = int(np.prod(shape))
+            v0 = theta0.reshape(-1)
 
-        def h(x):
-            return apply_two_site(x.reshape(shape), Li, W1, W2, Ri, be).reshape(-1)
+            Vs = [
+                _block_vector(ELs[j][i], P[i], P[i + 1], ERs[j][i + 2], be).reshape(-1)
+                for j, P in enumerate(prev)
+            ]
+
+            def h(x):
+                return apply_two_site(x.reshape(shape), Li, W1, W2, Ri, be).reshape(-1)
 
         def penalised(x):
             y = h(x)
             for v in Vs:
-                c = be.to_scalar(be.vdot(v, x))
-                if not be.is_complex:
+                c = fb.to_scalar(fb.vdot(v, x))
+                if not fb.is_complex:
                     # to_scalar returns a Python complex; multiplying it in would promote
                     # y to complex128 on the real backend and force a silent cast back to
                     # real inside the eigensolver at every Lanczos step. v and x are real
@@ -424,75 +623,113 @@ def _dmrg_excited(mpo, chi, *, prev_states, penalty, n_sweeps, tol, eig_tol, tru
         def eigsolve(matvec, v):
             if eig == "lanczos-restart":
                 e, x, _ = lanczos_ground_restart(
-                    matvec, v, be, tol=eig_tol, max_iter=min(dim, eig_max_iter),
+                    matvec, v, fb, tol=eig_tol, max_iter=min(dim, eig_max_iter),
                     m=restart_m, k=restart_k, reorth_alg=reorth_alg)
             else:
                 e, x, _ = lanczos_ground(
-                    matvec, v, be, tol=eig_tol,
+                    matvec, v, fb, tol=eig_tol,
                     max_iter=min(dim, eig_max_iter), reorth=reorth)
             return float(np.real(e)), x
 
-        v0 = theta0.reshape(-1)
-        t0 = time.perf_counter()
+        if noise:
+            r = fb.randn(noise_rng, dim)
+            v0 = v0 + (start_noise * _nrm(v0, fb) / _nrm(r, fb)) * r
+        t0 = _now()
         x = None
         if deflate == "project":
-            proj, rank = _projector(Vs, be)
+            proj, rank = _projector(Vs, fb)
             if rank < dim:
                 v = proj(v0)
-                if _nrm(v, be) <= 1e-6 * max(_nrm(v0, be), 1e-300):
-                    v = proj(be.array(rng.standard_normal(dim)))   # start lay in the span
-                e, x = eigsolve(_lifted(h, proj, [v], penalty, be), v)
+                if _nrm(v, fb) <= 1e-6 * max(_nrm(v0, fb), 1e-300):
+                    v = proj(fb.array(rng.standard_normal(dim)))   # start lay in the span
+                e, x = eigsolve(_lifted(h, proj, [v], penalty, fb), v)
                 x = proj(x)                     # remove round-off drift into the span
-                nx = _nrm(x, be)
+                nx = _nrm(x, fb)
                 x = x / nx if nx > _PROJ_KEEP else None
             fallbacks += x is None
         if x is None:
             e, x = eigsolve(penalised, v0)
-        t_eig += time.perf_counter() - t0
+        t_eig += _now() - t0
 
-        U, S, Vh, disc = _truncate(x.reshape(a * s1, s2 * b), chi, trunc, be, rng,
-                                   "left" if direction == "right" else "right")
-        S = S / be.norm(S)
-        total_disc += disc
-        k = int(S.shape[0])
+        if block:
+            mat, rec = fuse(wrap(x), ((0, 1), (2, 3)), be)
+            U, S, Vh, disc = linalg_of(mat).truncated_svd(mat, chi)
+            S = S / be.norm(S)
+            total_disc += float(disc)
+            if direction == "right":
+                M[i] = split(U, rec, be, legs=(0,))
+                M[i + 1] = split(Vh.scale(S, 0), rec, be, legs=(1,))
+            else:
+                M[i] = split(U.scale(S, 1), rec, be, legs=(0,))
+                M[i + 1] = split(Vh, rec, be, legs=(1,))
+        else:
+            U, S, Vh, disc = _truncate(x.reshape(a * s1, s2 * b), chi, trunc, be, rng,
+                                       "left" if direction == "right" else "right")
+            S = S / be.norm(S)
+            total_disc += disc
+            k = int(S.shape[0])
+            if direction == "right":
+                M[i] = U.reshape(a, s1, k)
+                M[i + 1] = (S[:, None] * Vh).reshape(k, s2, b)
+            else:
+                M[i] = (U * S).reshape(a, s1, k)
+                M[i + 1] = Vh.reshape(k, s2, b)
         if direction == "right":
-            M[i] = U.reshape(a, s1, k)
-            M[i + 1] = (S[:, None] * Vh).reshape(k, s2, b)
             L[i + 1] = update_left_env(L[i], M[i], W1, be)
             for j, P in enumerate(prev):
                 ELs[j][i + 1] = _grow_EL(ELs[j][i], M[i], P[i], be)
         else:
-            M[i] = (U * S).reshape(a, s1, k)
-            M[i + 1] = Vh.reshape(k, s2, b)
             R[i + 1] = update_right_env(R[i + 2], M[i + 1], W2, be)
             for j, P in enumerate(prev):
                 ERs[j][i + 1] = _grow_ER(ERs[j][i + 2], M[i + 1], P[i + 1], be)
         return e
 
+    deadline = None if time_budget_s is None else t_call + time_budget_s
     prev_E = None
-    sweep = 0
+    sweep_s, converged, cut = [], False, False
     for sweep in range(n_sweeps):
+        if deadline is not None and sweep_s and _now() + max(sweep_s) > deadline:
+            cut = True
+            break
+        t_sweep = _now()
+        noise = bool(start_noise) and sweep == 0
         for i in range(0, N - 1):
-            E = solve_block(i, "right")
+            E = solve_block(i, "right", noise)
         for i in range(N - 2, -1, -1):
-            E = solve_block(i, "left")
+            E = solve_block(i, "left", noise)
         invariants.sweep(M, W)
         energies.append(E)
+        be.sync()
+        sweep_s.append(_now() - t_sweep)
         if verbose:
             print(f"    sweep {sweep+1:2d}: E_pen = {E:.12f}", flush=True)
         if prev_E is not None and abs(E - prev_E) < tol:
+            converged = True
             break
         prev_E = E
 
     M = [be.array(m) for m in M]
-    ov = [abs(mps_inner(M, [be.array(x) for x in P], be)) for P in prev_states]
-    E_phys = float(np.real(mpo_expectation(M, mpo, be)))
-    info = {"sweeps": sweep + 1, "energies": energies, "E_penalised": E,
+    if block:
+        nM = float(np.sqrt(mps_inner(M, M, be).real))
+        ov = [abs(mps_inner(M, P, be)) / nM for P in prev]
+        E_phys = float(np.real(mpo_expectation(M, W, be)))
+    else:
+        ov = [abs(mps_inner(M, [be.array(x) for x in P], be)) for P in prev_states]
+        E_phys = float(np.real(mpo_expectation(M, mpo, be)))
+    bonds = _bonds(M) or [(1, 1)]
+    info = {"sweeps": len(energies), "energies": energies, "E_penalised": E,
             "penalty_overlaps": ov, "discarded_weight": total_disc,
             "eig_time": t_eig, "chi": chi, "eig": eig, "backend": be.name, "deflate": deflate,
             "project_fallbacks": fallbacks,
             "restart_m": restart_m if eig == "lanczos-restart" else None,
-            "restart_k": restart_k if eig == "lanczos-restart" else None}
+            "restart_k": restart_k if eig == "lanczos-restart" else None,
+            "converged": converged, "cut": cut, "sweep_s": sweep_s, "expand": 0,
+            "max_bond": max(n for n, _ in bonds), "max_bond_dense": max(n for _, n in bonds)}
+    if block:
+        last = _sectors(_last_bond(M))
+        one = len(last["sectors"]) == 1
+        info.update(charge=last["sectors"][0] if one else None, last_bond=last)
+    info["wall_s"] = _now() - t_call
     return E_phys, MPS(M, center=0), info        # the last sweep ends at site 0
 
 
@@ -699,7 +936,15 @@ def degenerate_clusters(energies, tau, m1_ref=None, max_k=4):
 
 
 def _host(M):
-    """Host numpy copies of an MPS, keeping each tensor's layout (np.asarray fails on GPU)."""
+    """Host numpy copies of an MPS, keeping each tensor's layout (np.asarray fails on GPU);
+    block and symmetric tensors keep their structure, with host buffers."""
+    if isinstance(M[0], SymmetricTensor):
+        out = [t.be.to_numpy(t.data) for t in M]
+        return [SymmetricTensor(t.codomain, t.domain, x, NumpyBackend(x.dtype), t.sym)
+                for t, x in zip(M, out)]
+    if isinstance(M[0], BlockTensor):
+        be = _dense_backend(M[0].data)
+        return [BlockTensor(t.struct, be.to_numpy(t.data)) for t in M]
     be = _backend_for(M)
     return [be.to_numpy(x) for x in M]
 
@@ -746,20 +991,32 @@ def dmrg_tower(mpo, chi, nlevels, penalty=1.0, seed=0, verbose=False,
     ``pair_clusters`` and ``energies_pre`` (the sequential tower); each repaired level's info
     gains ``repaired``, ``cluster`` and ``E_block``.
 
-    Returns ``(energies, states, infos)``; ``states`` are host numpy arrays on every backend.
+    Block and symmetric MPOs (provisional) take ``charge=`` as `dmrg_excited` does; a warm
+    start fixes the sector itself. ``pair_solve`` needs a dense MPO. There is no time budget
+    (``time_budget_s`` raises).
+
+    Returns ``(energies, states, infos)``; ``states`` are host numpy arrays on every backend
+    (block and symmetric tensors with host buffers).
     """
-    _dense_only(mpo, "dmrg_tower")
+    if pair_solve:
+        _dense_only(mpo, "dmrg_tower(pair_solve=True)")
     if "options" in kw:
         raise TypeError("dmrg_tower takes dmrg_excited settings as flat keywords, not options=")
+    if kw.get("time_budget_s") is not None:
+        raise ValueError("dmrg_tower takes no time_budget_s: it would apply to each solve, not "
+                         "to the tower")
+    charge = kw.pop("charge", None)
     states, energies, infos = [], [], []
     for n in range(nlevels):
         w = _tower_penalty(energies, penalty)
         for attempt in range(max_retries):
             warm = warm_chain and deflate == "penalty" and states and attempt == 0
             init = states[-1] if warm else None
+            sector = {} if charge is None or init is not None else {"charge": charge}
             E, M, info = dmrg_excited(mpo, chi, prev_states=states, penalty=w,
                                       seed=seed + 17 * n + 101 * attempt,
-                                      init_mps=init, verbose=False, deflate=deflate, **kw)
+                                      init_mps=init, verbose=False, deflate=deflate, **sector,
+                                      **kw)
             ov = max(info["penalty_overlaps"], default=0.0)
             info["penalty"] = w
             info["attempt"] = attempt
@@ -782,7 +1039,7 @@ def dmrg_tower(mpo, chi, nlevels, penalty=1.0, seed=0, verbose=False,
     energies_pre = list(energies)
     clusters = degenerate_clusters(energies, pair_tau, m1_ref=pair_m1, max_k=pair_max_k)
     blk_kw = {key: kw[key] for key in ("n_sweeps", "tol", "eig_tol", "eig_max_iter", "backend")
-              if key in kw}
+              if kw.get(key) is not None}
     span = dict(clusters)
     n = clusters[0][0] if clusters else nlevels
     while n < nlevels:

@@ -157,11 +157,19 @@ _DATA_DOCS = {"SX": "Pauli matrix σˣ, a 2×2 complex numpy array.",
 _PROVISIONAL = (".. warning::", "",
                 "   Provisional: the block-tensor modules, including the ``block_graph`` and "
                 "``block_lanczos`` switches, may change before 1.0.", "")
-# (file name, title, modules, provisional)
+_PROVISIONAL_SYMMETRIC = (".. warning::", "",
+                          "   Provisional, and not exported from ``tnkit``: these modules may "
+                          "change before 1.0.", "")
+# (file name, title, modules, provisional warning or None)
 _MODULE_PAGES = [
     ("blocks", "Block-sparse tensors",
-     ("tnkit.blocks", "tnkit.block_backend", "tnkit.block_graph", "tnkit.block_lanczos"), True),
-    ("opsum", "Operator sums", ("tnkit.opsum",), False),
+     ("tnkit.blocks", "tnkit.block_backend", "tnkit.block_graph", "tnkit.block_lanczos"),
+     _PROVISIONAL),
+    ("symmetric", "Symmetric tensors",
+     ("tnkit.symmetry", "tnkit.symmetric_tensor", "tnkit.symmetric_linalg",
+      "tnkit.symmetric_backend", "tnkit.fusion_trees"), _PROVISIONAL_SYMMETRIC),
+    ("opsum", "Operator sums", ("tnkit.opsum",), None),
+    ("thermal", "Thermal states", ("tnkit.thermal",), None),
 ]
 
 
@@ -227,8 +235,8 @@ def _write_api_pages(app=None, config=None):
             lines += [f".. py:data:: {n}", "", f"   {_DATA_DOCS.get(n, 'Exported constant.')}", ""]
     _write("public", lines)
 
-    for page, title, modnames, provisional in _MODULE_PAGES:
-        lines = _heading(title, "=") + (list(_PROVISIONAL) if provisional else [])
+    for page, title, modnames, warning in _MODULE_PAGES:
+        lines = _heading(title, "=") + list(warning or ())
         for modname in modnames:
             mod = importlib.import_module(modname)
             lines += _heading(f"``{modname}``", "-")

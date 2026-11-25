@@ -114,8 +114,7 @@ solvers are solved on the host, and TDVP's `measure` receives host copies of the
 
 If a Hamiltonian conserves a charge, such as particle number, total spin `S^z` or parity,
 every tensor splits into blocks of definite charge and most blocks are zero. tnkit can store
-and multiply only the nonzero blocks. It supports abelian symmetries; non-abelian symmetries
-such as SU(2) are not supported yet:
+and multiply only the nonzero blocks. Block tensors take abelian symmetries:
 
 ```python
 from tnkit import U1, Zn, ProductSymmetry
@@ -146,18 +145,30 @@ dense = to_dense_mps(mps, site_charges)
   `U1`, `Zn` and `ProductSymmetry`. `to_block_mps` and `project_to_block_mps` convert a dense
   MPS and accept `U1()` only; anything else raises `NotImplementedError`.
 - A block MPS must be converted with `to_dense_mps` before `entropies()`, `to_numpy()` or the
-  observables. `dmrg_excited` takes dense MPOs only.
-- With a block MPO, DMRG uses subspace expansion in its opening sweeps by default, so that
+  observables. `dmrg_excited` takes block MPOs with `charge=`; `dmrg_block` and
+  `dmrg_tower(pair_solve=True)` take dense MPOs only.
+- With a block MPO, `dmrg` uses subspace expansion in its opening sweeps by default, so that
   charge sectors missing from the random start can fill. `expand=0` turns it off.
+  `dmrg_excited` and `dmrg_tower` do not expand.
 - `tdvp1_evolve` and `tdvp2_evolve` take block states through `BlockBackend`.
-- The block-tensor and symmetry API is provisional and may change before version 1.0.
+- Non-abelian symmetries such as SU(2) and U(1) x SU(2) run on symmetric tensors
+  (`tnkit.symmetric_tensor`, `tnkit.symmetric_backend`), which store one reduced block per
+  coupled sector (total spin, for SU(2)) and keep whole multiplets on each bond. They work with `dmrg`, `dmrg_excited` and
+  `tdvp2_evolve`, on CPUs and GPUs, and are not exported from `tnkit`; see the symmetries guide
+  in the documentation.
+- The block-tensor, symmetric-tensor and symmetry API is provisional and may change before
+  version 1.0.
 
 ## Tests
 
+From a clone, with [uv](https://docs.astral.sh/uv/):
+
 ```bash
-pip install -e ".[test]"
-pytest
+uv sync --extra torch     # Python 3.11, the test tools and torch, from uv.lock
+uv run pytest
 ```
+
+Or with pip: `pip install -e ".[test]"`, then `pytest`.
 
 ## Benchmarks
 
