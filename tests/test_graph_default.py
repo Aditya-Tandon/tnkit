@@ -122,6 +122,21 @@ def test_real_block_numpy_and_other_device_backends_never_capture(make):
         resolve_graph_mode("on", b, cuda_available=True)
 
 
+def test_the_current_cuda_device_is_a_capture_target(monkeypatch):
+    """`get_backend('torch-cuda')` is on the current device; after `set_device(1)` that is
+    cuda:1, which capture records on, while cuda:0 is then another device. CUDA is faked."""
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 1)
+    for b in ("torch-cuda", "torch-cuda:1", get_backend("torch-cuda")):
+        assert resolve_graph_mode("auto", b) == "capture"
+        assert resolve_graph_mode("on", b) == "capture"
+    for b in ("torch-cuda:0", get_backend("torch-cuda:0")):
+        assert resolve_graph_mode("auto", b) == "eager"
+        with pytest.raises(ValueError, match="graph='on' requires"):
+            resolve_graph_mode("on", b)
+
+
 def test_on_refusal_names_the_backend():
     pytest.importorskip("torch")
     for b in ("torch-cuda:1", get_backend("torch-cuda:1")):
@@ -129,7 +144,8 @@ def test_on_refusal_names_the_backend():
             resolve_graph_mode("on", b, cuda_available=True)
     with pytest.raises(ValueError, match=r"got backend='torch-cpu'\. "):
         resolve_graph_mode("on", get_backend("torch-cpu"))
-    with pytest.raises(ValueError, match=r"got backend='BlockBackend\(torch-cuda\)'\. "):
+    # The name carries the device index where CUDA is present: torch-cuda:0 on a GPU machine.
+    with pytest.raises(ValueError, match=r"got backend='BlockBackend\(torch-cuda(:\d+)?\)'\. "):
         resolve_graph_mode("on", BlockBackend(get_backend("torch-cuda")), cuda_available=True)
 
 

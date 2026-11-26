@@ -52,6 +52,7 @@ from . import linalg as tl
 from ._sparse import bond_states
 from .expansion import expand_right
 from .tdvp import (FAST_EXPM_RECAL, TDVPOptions, _check_blocks, _check_degenerate_tol,
+                   _check_meas_every,
                    _edge_envs, _is_block, _evolve_one_site_left, _evolve_one_site_left_cut,
                    _evolve_one_site_right, _evolve_two_site, _fast_step, _graphed_site_step,
                    _graphed_site_step_prefix, _KrylovMeter, _resolve_fast_expm,
@@ -88,6 +89,7 @@ class TDVPEvolver:
             raise ValueError("TDVPEvolver needs a fixed MPO; use tdvp*_evolve for a callable")
         if o.krylov_m < 1:
             raise ValueError(f"krylov_m must be a positive Krylov dimension, got {o.krylov_m!r}")
+        _check_meas_every(o)
         _check_degenerate_tol(o)
         if o.cuda_graph is not None and o.prefix_graph is not None:
             raise ValueError("cuda_graph and prefix_graph are alternatives, not a stack.")

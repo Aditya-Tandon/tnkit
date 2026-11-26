@@ -1,24 +1,22 @@
-"""TDVP — Time-Dependent Variational Principle for MPS real-time evolution
-(the thesis's named "variational" dynamics method).
+"""TDVP (the time-dependent variational principle) for real-time evolution of an MPS.
 
-Where TEBD Trotterises nearest-neighbour *gates*, TDVP evolves the state by
-exponentiating the effective Hamiltonian on each block — which is exactly the
-matrix-free `apply_two_site`/`apply_one_site` action. So TDVP is built from a
-**Krylov (Lanczos) exponential** (`lanczos_expm`): the same matrix-free machinery
-that finds ground states now propagates in time. Because it works from an MPO (not
-gates), TDVP extends to **long-range Hamiltonians** (2D cylinders, lattice gauge
-theories) where TEBD gates do not apply.
+Where TEBD applies Trotterised nearest-neighbour gates, TDVP exponentiates the effective
+Hamiltonian of each block, the matrix-free action `apply_two_site` / `apply_one_site`, with a
+Krylov (Lanczos) exponential (`lanczos_expm`). It works from an MPO, so it also handles
+long-range Hamiltonians (2D cylinders, lattice gauge theories) where nearest-neighbour gates
+do not apply. Time evolution is ``exp(-i H t)`` with hbar = 1.
 
-Two-site TDVP (2TDVP), symmetric 2nd-order integrator per step dt:
-  forward sweep (L->R): at each bond, evolve the 2-site block by exp(-i H2 dt/2),
-    SVD-truncate to chi (bonds can grow), then back-evolve the new 1-site centre by
+Two-site TDVP, a symmetric second-order integrator per step dt:
+  forward sweep (left to right): at each bond, evolve the two-site block by exp(-i H2 dt/2),
+    cut it back to chi by SVD (bonds can grow), then evolve the new one-site centre back by
     exp(+i H1 dt/2);
-  backward sweep (R->L): the mirror image.
-Every bond is thus forward-evolved by dt total and every interior site
-back-evolved by dt total. Backend-agnostic (contraction + SVD + Krylov exp).
+  backward sweep (right to left): the mirror image.
+Every bond is evolved forward by dt in total and every interior site back by dt. One-site TDVP
+(`tdvp1_evolve`) does the same on single sites and keeps every bond's size.
 """
 from __future__ import annotations
 import dataclasses
+import numbers
 import time
 import warnings
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
@@ -77,76 +75,114 @@ def _check_blocks(M, mpo, be, fast_expm=None, graph="off", trunc="svd"):
 
 @dataclasses.dataclass
 class TDVPOptions:
-    """Everything the two TDVP entry points can be told, apart from the state, the
+    """Settings of `tdvp1_evolve`, `tdvp2_evolve` and `TDVPEvolver`, apart from the state, the
     Hamiltonian and the time grid.
 
-    One dataclass covers both integrators because they share nine of their
-    settings; the fields only one of them accepts are marked below and RAISE if
-    they are set for the other, rather than being silently ignored. As with
-    `DMRGOptions` this is a grouping and not a redesign: same names, same defaults,
-    same meanings, so `TDVPOptions()` reproduces the historical behaviour of both.
+    Every field can also be passed to the integrators as a keyword, with the same default.
+    A field that belongs to one integrator raises when it is passed as a keyword to the other;
+    set inside a `TDVPOptions`, it is ignored by the other integrator.
 
-    Shared
-    ------
-    backend, measure, meas_every : as in the flat signatures. `measure` receives a
-        snapshot of the state and its return value is recorded against the time. With block
-        tensors (provisional: a block MPS and MPO with ``backend=BlockBackend(dense)``),
-        `measure` and the returned MPS get block tensors.
-    L0, RN, canonicalize : boundary environments and the gauge switch. A window on an
-        infinite background needs `canonicalize=True` once if its centre is not at site 0
-        (a built window has it in the middle); that leaves the two boundary bonds that
-        meet L0/RN unchanged. Later steps may pass False -- see `tnkit.window`.
-    keep_device : hand `measure` the on-device tensors instead of host copies.
-    adaptive_dt : None (exactly the fixed-step behaviour) or the controller dict.
-    fast_expm   : None | 'auto' | int | dict -- the frozen-Krylov fast path.
-    krylov_m    : largest Krylov dimension of the adaptive exponential (eager path; default 30,
-        `lanczos_expm`'s own). The frozen schedule of `fast_expm` and prefix-graph replays
-        (`graph_m_max`) set their own dimension; `graph='auto'` therefore resolves to eager when
-        it is not 30.
-    step_callback : optional fn(step_dict, obs_or_None) called at the end of every step.
-        `step_dict['krylov_max']` is the largest Krylov dimension of that step's eager solves
-        and `step_dict['krylov_cap_hits']` how many adaptive solves stopped at the `krylov_m`
-        cap without meeting the solver tolerance (graph-replayed sites are not counted; the
-        fixed-schedule paths, `fast_expm` or TNKIT_EXPM_ADAPTIVE=0, always report 0). The
-        two-site integrator's dict also carries the profiling fields described in
-        `tdvp2_evolve`.
-
-    Two-site only (`tdvp2_evolve`)
-    ------------------------------
-    trunc, chi_max, svd_tol, renorm, seed, profile.
-    degenerate_tol : Experimental. 0 (default) cuts the spectrum exactly where the cap and
-        `svd_tol` say. A value in (0, 1), with trunc='svd', keeps or drops whole a group of
-        singular values equal within this relative tolerance of the value next to the cut: at
-        the cap the cut moves down to the start of the group, below the cap the `svd_tol` cut
-        moves up to its end. A group that starts at the largest value is split, since moving
-        down would keep nothing. A bond cut below the cap this way counts as full in
-        `TDVPEvolver`'s '12site' schedule. Not shown to help: on a 12-qubit test it made the
-        isospin leak 1.56-1.65x larger where it acted, and lowered the fidelity. A DMRG version
-        was rejected: at 1e-6 and 1e-4 it never acted on the 80 target runs; it acted in 19 of
-        112 other runs and never lowered an energy; at 1e-1 it made one energy error about 90x
-        larger.
-
-    `TDVPEvolver` only
-    ------------------
-    expand : 0 (default) leaves the bond bases as the sweeps make them. n > 0 adds, before every
-        step, up to n states to the right basis of each bond: the part of H|psi> the basis
+    Parameters
+    ----------
+    backend : str or backend, default 'numpy'
+        As in `get_backend`. Time evolution needs a complex backend. With block tensors
+        (provisional: a block MPS and MPO with ``backend=BlockBackend(dense)``) or symmetric
+        tensors (``backend=SymmetricBackend(dense)``), `measure` and the returned MPS get
+        tensors of that type.
+    measure : callable or None, default None
+        ``measure(state)`` is called at t = 0 and every `meas_every` steps, and its return
+        value is recorded with the time. `state` is a list of host numpy tensors (dense
+        backends, unless `keep_device`), or the backend's own tensors.
+    meas_every : int, default 1
+        Steps between measurements, >= 1.
+    L0, RN : tensor or None, default None
+        Boundary environments, for a window on an infinite background (`tnkit.window`); None
+        for open boundaries.
+    canonicalize : bool, default True
+        Bring the state to right-canonical form before the first step. A window on an infinite
+        background needs it once if its centre is not at site 0 (a built window has it in the
+        middle); this leaves the two boundary bonds that meet `L0` and `RN` unchanged. Later
+        calls may pass False.
+    keep_device : bool, default False
+        Hand `measure` the backend's tensors instead of host copies, which saves a transfer
+        per state and measurement when many states are evolved in a loop.
+    adaptive_dt : dict or None, default None
+        None keeps a fixed step. A dict of controller parameters (``tol``, ``order``,
+        ``safety``, ``fmin``, ``fmax``, ``dt_min``, ``dt_max``, ``tol_scale``, ``log``) picks the
+        step size per step from the Krylov error estimate (see `_DtController`); `dt` is then
+        the initial step and ``dt * n_steps`` the total time. Measurement times are those of
+        the fixed-step run. It saves time, not accuracy: in a run whose bonds grow, `svd_tol`
+        sets the accuracy.
+    fast_expm : None, 'auto', int or dict, default None
+        Fixed-length Krylov exponentials without host synchronisation, for GPUs
+        (`eigensolver.lanczos_expm_fixed`). None: the adaptive solver. int: that fixed Krylov
+        dimension. 'auto': the first sweep runs the adaptive solver, and the dimension is fixed
+        2 above the largest it needed, then re-measured every 25 steps. dict: as 'auto', with
+        the dimension written back as ``'m'`` (and ``'recal'`` for the re-measurement
+        interval, 0 to never re-measure), so a caller that re-enters the integrator reuses it.
+        Not with `adaptive_dt`.
+    krylov_m : int, default 30
+        Largest Krylov dimension of the adaptive exponential. The fixed schedules of
+        `fast_expm` and of graph replays (`graph_m_max`) set their own; ``graph='auto'``
+        therefore runs eagerly when `krylov_m` is not 30.
+    step_callback : callable or None, default None
+        ``step_callback(step_dict, obs)`` at the end of every step, where `obs` is
+        ``(t, measure(state))`` on measured steps and None otherwise; it can write each row as
+        it is produced. ``step_dict['krylov_max']`` is the largest Krylov dimension of the
+        step's eager solves and ``step_dict['krylov_cap_hits']`` the number of adaptive solves
+        that stopped at the `krylov_m` cap without meeting the solver tolerance (graph-replayed
+        sites are not counted, and fixed schedules report 0). The two-site dict also carries
+        the fields of `profile`. Not with `adaptive_dt` in `tdvp1_evolve`.
+    trunc : str, default 'svd'
+        Two-site only. As in `DMRGOptions`. 'gram' is for float64 with ``svd_tol >= 1e-12``
+        (lower warns), and for energies, local observables and entropies only: it does not
+        reproduce 'svd' bit for bit, and in chaotic dynamics the two drift apart. Single
+        precision, block tensors and `degenerate_tol` are refused with 'gram'.
+    chi_max : int or None, default None
+        Two-site only. Hard cap on every bond; None means `chi`. Give it when the input state
+        already has bonds larger than `chi` (a window on an infinite background has 3 chi_bg),
+        or the first step truncates the initial state.
+    svd_tol : float, default 0.0
+        Two-site only. Relative discarded weight allowed per bond. 0 keeps `chi` singular
+        values whenever there are that many; > 0 keeps the smallest rank whose dropped weight
+        ``sum(s_dropped^2) / sum(s^2)`` stays below `svd_tol`, still capped at `chi`.
+    renorm : bool, default True
+        Two-site only. Rescale the Schmidt values to unit norm after every cut. False leaves
+        the norm lost to truncation visible.
+    seed : int, default 0
+        Two-site only. Seeds the randomized truncations.
+    profile : dict or None, default None
+        Two-site only. If given, ``profile['steps']`` gets one dict per step: ``step``, ``t``,
+        ``dt``, ``max_chi`` (largest bond after the step; multiplets on symmetric tensors),
+        ``disc`` (summed relative discarded weight), ``expm_s``, ``trunc_s``, ``env_s``,
+        ``krylov_max`` and ``krylov_cap_hits``. It adds GPU synchronisations.
+    degenerate_tol : float, default 0.0
+        Two-site only, experimental. 0 cuts exactly where the cap and `svd_tol` say. A value
+        in (0, 1), with ``trunc='svd'``, keeps or drops whole a group of singular values equal
+        within this relative tolerance of the value next to the cut: at the cap the cut moves
+        down to the start of the group, below the cap the `svd_tol` cut moves up to its end. A
+        group that starts at the largest value is split, since moving down would keep nothing.
+        A bond cut below the cap this way counts as full in the '12site' schedule of
+        `TDVPEvolver`. It is not known to improve accuracy.
+    expand : int, default 0
+        `TDVPEvolver` only. 0 leaves the bond bases as the sweeps make them. n > 0 adds, before
+        every step, up to n states to the right basis of each bond: the part of H|psi> the basis
         misses (`tnkit.expansion.expand_right`), with zero weight. The step can then move weight
         into them, and on block tensors into charge sectors a bond lacked. The returning sweep
-        cuts every one-site bond back, by SVD, to the size it had before the expansion, so the
-        cap and the '12site' schedule are as without it; the cut back applies `degenerate_tol`,
-        and outside '1site' a bond it pinned goes back to the cap. The expansion's own cuts
-        (building H|psi> and choosing the n states) ignore `degenerate_tol`, so on a degenerate
-        spectrum dense and block runs can keep different states. Open boundaries only.
-
-    One-site only (`tdvp1_evolve`)
-    ------------------------------
-    cuda_graph, prefix_graph : caller-managed graph caches -- set either explicitly to opt in
-        by hand (and bypass `graph` entirely; see below).
-    graph : 'auto' (default) | 'on' | 'off' -- whether to build a `prefix_graph`
-        capture automatically when neither `cuda_graph` nor `prefix_graph` is given explicitly.
-        See `resolve_graph_mode`.
-    graph_m_max, graph_cache_cap : sizing for the cache `graph` builds automatically; unused
-        when `cuda_graph`/`prefix_graph` is given explicitly, since that cache is already built.
+        cuts every one-site bond back, by SVD, to its size before the expansion, so the cap and
+        the '12site' schedule are as without it; that cut applies `degenerate_tol`, and outside
+        '1site' a bond it pinned goes back to the cap. The expansion's own cuts ignore
+        `degenerate_tol`, so on a degenerate spectrum dense and block runs can keep different
+        states. Open boundaries only.
+    cuda_graph, prefix_graph : cache or None, default None
+        One-site only. Graph caches built by the caller (`tnkit.cudagraph`,
+        `tnkit.prefix_graph_impl`); either one bypasses `graph`.
+    graph : {'auto', 'on', 'off'}, default 'auto'
+        One-site only. Whether to build a prefix-graph cache when neither cache is given; see
+        `resolve_graph_mode`. 'auto' captures only on a complex torch-cuda backend with a CUDA
+        device, and runs eagerly elsewhere.
+    graph_m_max, graph_cache_cap : int, default 12 and 1024
+        One-site only. Krylov length and number of graphs of the cache `graph` builds.
     """
 
     # shared
@@ -202,6 +238,7 @@ def _tdvp_opts(which: str, options: Any, legacy: Dict[str, Any]) -> TDVPOptions:
                          "expand")
     if o.krylov_m < 1:
         raise ValueError(f"krylov_m must be a positive Krylov dimension, got {o.krylov_m!r}")
+    _check_meas_every(o)
     _check_degenerate_tol(o)
     other = _TDVP1_ONLY if which == "tdvp2_evolve" else _TDVP2_ONLY
     wrong = [k for k in other if k in legacy]
@@ -220,6 +257,12 @@ def _warn_gram_tol(o: TDVPOptions) -> None:
                       stacklevel=3)
 
 
+def _check_meas_every(o: TDVPOptions) -> None:
+    m = o.meas_every
+    if isinstance(m, bool) or not isinstance(m, numbers.Integral) or m < 1:
+        raise ValueError(f"meas_every must be an integer >= 1, got {m!r}")
+
+
 def _check_degenerate_tol(o: TDVPOptions) -> None:
     if not 0 <= o.degenerate_tol < 1:
         raise ValueError(f"degenerate_tol must be in [0, 1), got {o.degenerate_tol!r}")
@@ -232,13 +275,11 @@ def _expm_apply(matvec, x, tau, be, spec, info, krylov_m=30):
 
     `spec` is None (the adaptive solver, capped at `krylov_m`) or a dict
     {m, mode, reorth, expm_where}:
-      mode='fast'   -> `lanczos_expm_fixed`: fixed schedule, tridiagonal assembled on-device,
-                       one synchronisation per solve instead of ~2m, batched reorth
-      mode='legacy' -> the ORIGINAL solver with its adaptive stop disabled, i.e. the same fixed
-                       schedule but still assembling the tridiagonal on the host from `.item()`
-                       reads. It exists so the benchmark can charge the fixed schedule's extra
-                       matvecs to the schedule and the sync removal to the sync removal, instead
-                       of reporting one confounded ratio.
+      mode='fast'   -> `lanczos_expm_fixed`: fixed schedule, tridiagonal on the device, one
+                       synchronisation per solve, batched reorthogonalisation;
+      mode='legacy' -> the adaptive solver with its adaptive stop off: the same fixed schedule,
+                       with the tridiagonal assembled on the host. It separates the cost of the
+                       fixed schedule from that of the synchronisations.
     """
     if not spec or not spec.get("m"):
         return lanczos_expm(matvec, x, tau, be, m=krylov_m, info=info)
@@ -252,34 +293,28 @@ def _expm_apply(matvec, x, tau, be, spec, info, krylov_m=30):
 
 
 def _resolve_fast_expm(fast_expm, adaptive_dt):
-    """Validate the `fast_expm` request and return (fixed_m or None, cache_or_None).
+    """Validate the `fast_expm` request and return (spec or None, cache or None).
 
     Accepted forms:
-      None    — off. The adaptive solver, bit-for-bit unchanged.
-      int     — freeze the Krylov schedule at this dimension.
-      'auto'  — run ONE warmup sweep on the adaptive solver, read the largest Krylov dimension it
-                actually needed anywhere in that sweep, and freeze just above it.
-      dict    — 'auto', but the calibrated dimension is written back into the dict as 'm' and
-                reused. This is the form a driver that re-enters `tdvp*_evolve` once per
-                measurement interval should pass, so the warmup is paid ONCE per run rather than
-                once per interval.
+      None    -- off: the adaptive solver.
+      int     -- a Krylov schedule fixed at this dimension.
+      'auto'  -- one first sweep on the adaptive solver; the schedule is fixed just above the
+                 largest Krylov dimension it needed.
+      dict    -- 'auto', with the dimension written back into the dict as 'm' and reused, for a
+                 caller that re-enters `tdvp*_evolve` once per measurement interval.
 
-    Calibrating rather than tabulating is deliberate. The Saad estimator was adopted
-    *instead of* a fixed chi-dependent m precisely because the right m
-    is a function of |tau| * ||H||, not of dt alone, and a sweep over random Hermitian
-    matrices rather than real effective Hamiltonians would not license a tabulated number.
-    The adaptive machinery already knows the answer for THIS state, dt and
-    coupling; the fast path just stops asking it 4N times per sweep.
+    The dimension is calibrated on the run rather than tabulated: the right m depends on
+    ``abs(tau) * norm(H_eff)``, not on dt alone, and the adaptive solver measures it for this
+    state, step and coupling.
     """
     if fast_expm is None:
         return None, None
     if adaptive_dt is not None:
         raise ValueError(
-            "fast_expm is incompatible with adaptive_dt. The adaptive step-size controller drives on "
-            "`est_ref`, the Saad first-neglected-term estimate frozen at a fixed Krylov "
-            "dimension, and computing it requires reading a device scalar back to the host at "
-            "every Lanczos step -- which is precisely the 91-syncs-per-site-step cost the fast "
-            "path deletes. Use one or the other.")
+            "fast_expm is incompatible with adaptive_dt. The adaptive step-size controller uses "
+            "`est_ref`, the Krylov error estimate at a fixed dimension, which needs a device "
+            "scalar read back to the host at every Lanczos step; the fast path avoids exactly "
+            "those reads. Use one or the other.")
     if isinstance(fast_expm, dict):
         fast_expm.setdefault("m", None)
         return fast_expm, (fast_expm if fast_expm.get("m") is None
@@ -294,43 +329,34 @@ def _resolve_fast_expm(fast_expm, adaptive_dt):
     return {"m": fm}, None
 
 
-FAST_EXPM_HEADROOM = 2          # extra Krylov iterations carried above the measured requirement
-FAST_EXPM_RECAL = 25            # steps between re-measurements of that requirement
+FAST_EXPM_HEADROOM = 2          # Krylov steps carried above the largest one needed
+FAST_EXPM_RECAL = 25            # steps between re-measurements of that dimension
 
 
 def _calibrate_m(meter, headroom=FAST_EXPM_HEADROOM, floor=4):
-    """Freeze the fixed Krylov schedule from a warmup sweep's measured requirement.
+    """The fixed Krylov dimension from a calibration sweep: the largest dimension the
+    adaptive solver needed over the sweep's block exponentials (the hardest block decides),
+    plus `headroom`.
 
-    `m_max` is the largest dimension the adaptive solver needed over the ~4N block exponentials
-    of one sweep -- max, not mean, for the same reason `_KrylovMeter` takes a max: the schedule has
-    to satisfy the HARDEST block, and a mean over 4N blocks is dominated by the easy bulk.
-
-    The headroom is ADDITIVE, not a percentage, and that is a measured choice rather than a
-    stylistic one. The measured distribution:
-    over 1140 real block exponentials at dt=0.05 the requirement is mean 9.07, median 9, max 10 --
-    a spread of one iteration around the mode, not a long tail. A multiplicative margin therefore
-    buys nothing but matvecs (25% cost 1.43x the arithmetic against the adaptive solver, where
-    m_max alone costs 1.10x), while two extra iterations cover the whole observed spread plus
-    slack. The Saad first-neglected term falls like |tau|^j beta_1..beta_j / (j-1)!, so each extra
-    iteration is worth roughly an order of magnitude of margin, not a percent.
+    The margin is additive: the dimensions needed vary by about one step around their mode,
+    and the neglected term falls like ``abs(tau)^j beta_1 ... beta_j / (j-1)!``, so each extra
+    step adds about an order of magnitude of margin, where a percentage margin would mostly add
+    matvecs.
     """
     return max(floor, int(meter.m_max) + int(headroom))
 
 
 def _fast_step(sweep, dt, state, cache):
-    """One sweep, re-measuring the frozen Krylov schedule when it is due.
+    """One sweep, re-measuring the fixed Krylov schedule when it is due.
 
-    A schedule frozen once at t=0 is a claim that the local stiffness |tau| * ||H_eff|| does not
-    grow over the run, and in a scattering problem that claim is false in exactly the interesting
-    place: the collision. So the requirement is RE-MEASURED every `recal` steps by running that
-    one sweep on the ordinary adaptive solver with a meter attached. The tax is 1/recal of the
-    sweeps (4% at the default 25) and it buys the accuracy guarantee back -- the fast path's one
-    real concession is that it has no per-step error estimate of its own, and this is what
-    replaces it.
+    The local stiffness ``abs(tau) * norm(H_eff)`` can grow during a run (for instance when
+    wave packets meet), so every `recal` steps one sweep runs the adaptive solver with a meter
+    attached and the dimension is set again. That costs 1/recal of the sweeps (4% at the
+    default 25) and stands in for the per-step error estimate the fast path lacks.
 
-    `cache['under']` counts the re-measurements that found the frozen schedule had been too
-    short. It is a DIAGNOSTIC, not a silent correction: a non-zero count means some steps in the
-    preceding window ran under-converged, and the run should be re-checked rather than trusted.
+    `cache['under']` counts the re-measurements that found the fixed schedule had been too
+    short. It is a diagnostic, not a correction: a non-zero count means some steps of the
+    preceding interval ran under-converged.
     """
     if cache is None:
         return sweep(dt)
@@ -357,9 +383,8 @@ class _KrylovMeter:
     ~4N exponentials of a sweep. Max, not mean: the step size must satisfy the HARDEST
     block, and a mean over 4N blocks is dominated by the easy bulk.
 
-    Cost: one dict write per `lanczos_expm` call plus, when the solver is adaptive, nothing
-    at all (the estimate at j=2 is computed anyway by the adaptive stop). The measured overhead
-    of this bookkeeping is folded into the accuracy checks on the adaptive controller itself.
+    Cost: one dict write per `lanczos_expm` call; on the adaptive solver the estimate at j=2
+    is computed anyway by the adaptive stop.
     """
     __slots__ = ("n", "est_max", "est_sum", "beta1_max", "m_max", "m_sum", "cap_hits", "info")
 
@@ -418,11 +443,10 @@ class _DtController:
 
     with a growth clamp and hard bounds. No step REJECTION: TDVP mutates the MPS and the
     environments in place, so a rejected step would cost a full state+environment snapshot
-    every step. The growth clamp (`fmax`) is what keeps the controller safe instead, and the
-    accuracy is measured against the exact free-fermion reference, not asserted.
+    every step. The growth clamp (`fmax`) keeps the controller safe instead.
 
     `tol=None` calibrates on the first step (tol = est_1 * tol_scale), so an adaptive run
-    starts by reproducing the fixed-dt run it is being compared with and only then floats.
+    starts at the step size `dt` asked for and only then adapts.
     """
 
     def __init__(self, tol=None, order=2.0, safety=0.9, fmin=0.5, fmax=1.5,
@@ -440,8 +464,7 @@ class _DtController:
             # Auto-calibrate on step 1 so the controller's EQUILIBRIUM step is exactly the dt the
             # caller asked for: the fixed point of dt -> dt*safety*(tol/est)^(1/order) is
             # est = tol*safety^order, so the safety factor has to be divided back out here.
-            # Without this the run silently shrinks to safety*dt0 and any "speedup" measured
-            # against the fixed-dt arm is a comparison at a different step size.
+            # Without this the step would settle at safety * dt0 instead of dt0.
             self.tol = max(est, 1e-300) / self.safety ** self.order * self.tol_scale
         if not np.isfinite(est) or est <= 0.0:
             raw = h * self.fmax
@@ -542,12 +565,11 @@ def _evolve_two_site(M, L, R, mpo, i, chi, dt, be, moving, prof=None,
 
     trunc   : truncation method, dispatched through `dmrg._truncate` -- the same code the
               statics use, so the two paths cannot drift apart.
-    svd_tol : relative discarded-weight budget per bond. 0 (default) = always keep `chi`
-              singular values, i.e. exactly the old behaviour. > 0 = keep the SMALLEST rank
-              whose dropped weight sum(sigma_dropped^2)/sum(sigma^2) stays under svd_tol,
-              still capped at `chi`. This is what makes the bond dimension track the physical
-              entanglement instead of sitting at the ceiling from the first step.
-    renorm  : rescale S to unit norm after truncating (default True, the historical behaviour).
+    svd_tol : relative discarded weight allowed per bond. 0 (default) always keeps `chi`
+              singular values. > 0 keeps the smallest rank whose dropped weight
+              sum(sigma_dropped^2)/sum(sigma^2) stays under svd_tol, still capped at `chi`, so
+              the bond dimension follows the entanglement.
+    renorm  : rescale S to unit norm after truncating (default True).
               Set False when the CALLER measures the norm -- renormalising silently absorbs
               the norm lost to truncation, which is exactly the signal a truncation check wants
               to see. It also matters for a window on an infinite background, whose norm is
@@ -631,83 +653,48 @@ def _evolve_two_site(M, L, R, mpo, i, chi, dt, be, moving, prof=None,
 def tdvp2_evolve(mps: MPSLike, mpo: Any, chi: int, dt: float, n_steps: int,
                  options: Optional[Union[TDVPOptions, Dict[str, Any]]] = None,
                  **legacy_kwargs: Any) -> Tuple[MPS, List[Tuple[float, Any]]]:
-    """Two-site TDVP evolution of `mps` under `mpo` (a generic MPO — not restricted
-    to nearest-neighbour) for n_steps of size dt. Returns (final_mps, records) with
-    records = list of (time, measure(mps_numpy)) sampled every meas_every steps.
+    """Two-site TDVP: real-time evolution whose bonds grow with the entanglement.
 
-    Settings may be passed flat, exactly as before, or grouped in a `TDVPOptions`
-    (a flat keyword overrides the corresponding field of an options object given
-    alongside it). `final_mps` is an `MPS` — a `list` subclass, so anything that
-    treated it as a list of rank-3 tensors is unaffected.
+    Parameters
+    ----------
+    mps : sequence of tensors
+        The initial state, rank-3 tensors ``(left, phys, right)``, sites numbered from 0. Dense
+        states are cast to the backend (a real state becomes complex); block and symmetric
+        states need the matching `backend`.
+    mpo : sequence of tensors, or callable
+        The Hamiltonian, axes ``(wl, wr, out, in)``, any range (not only nearest
+        neighbours). A callable ``t -> MPO`` gives a time-dependent H, evaluated at the
+        midpoint of each step (second order, as the sweep), at the cost of one extra
+        environment sweep per step.
+    chi : int
+        Bond cap, >= 1, unless `chi_max` is given. A bond grows (a two-site block has rank up
+        to ``min(2a, 2b)`` for bonds a and b) and is cut back only past the cap or by
+        `svd_tol`. On symmetric tensors it counts multiplets.
+    dt : float
+        Time step, > 0. Each step applies ``exp(-i H dt)`` (hbar = 1), in the time units of
+        `mpo`'s energies.
+    n_steps : int
+        Number of steps, >= 0; the total time is ``dt * n_steps``.
+    options : TDVPOptions or dict, optional
+        Settings; see `TDVPOptions` for every field, its default and its range.
+    **legacy_kwargs
+        Any field of `TDVPOptions` that this integrator takes, passed flat. A keyword
+        overrides the same field of `options`; a field of the other integrator raises.
 
-    TIME-DEPENDENT H: `mpo` may instead be a callable t -> MPO list. It is evaluated at the
-    MIDPOINT of each step (2nd order, matching the Strang sweep) and the right environments are
-    rebuilt, at the cost of one extra environment sweep per step. This is what makes RAMPS
-    expressible, and a ramp is the one common protocol where an adaptive step size has
-    something to adapt to — a sudden quench conserves <H^2>-<H>^2 exactly, so its local stiffness
-    meter is constant by construction.
+    Returns
+    -------
+    mps : MPS
+        The evolved state on the backend used, with its orthogonality centre at site 0
+        (``mps.center == 0``) and every other site right-canonical.
+    records : list of (float, object)
+        ``(t, measure(state))`` at t = 0 and every `meas_every` steps; empty when `measure`
+        is None.
 
-    DYNAMIC BOND DIMENSION. Unlike `tdvp1_evolve`, which is strictly bond-preserving, the
-    two-site update produces a block of rank up to min(2a, 2b) and so lets the bond GROW with
-    the entanglement, truncating only against the cap. Two knobs control it:
-
-    chi_max : hard cap on any bond. Defaults to `chi`. Give it when the INPUT state already
-        carries bonds larger than the nominal `chi` -- an MPS window on an infinite background
-        sits at 3*chi_bg, and passing chi=chi_bg would truncate the initial state on step one,
-        which looks like an integrator error and is not.
-    svd_tol : relative discarded-weight budget per bond (see `_evolve_two_site`). 0 = keep the
-        cap always (old behaviour, and the honest default: a tolerance chosen without measuring
-        the spectrum is the same mistake as an absolute threshold). > 0 = adaptive rank.
-    trunc   : 'svd' | 'gram' | 'randomized' | 'randomized-mixed' | 'density' | 'cutn', dispatched
-        through `dmrg._truncate` ('density' is deprecated). 'gram' (GEMM + eigh) is an opt-in
-        exception that failed its acceptance test and is NOT reproducible against 'svd' here:
-        a chaotic run drifts from an 'svd' run by 10-50x the 'svd' rerun spread (under a tenth
-        of the truncation budget's own effect). Use it in float64 with svd_tol >= 1e-12 (lower
-        warns) for energies, local observables and entropies only; single precision, block
-        tensors and degenerate_tol are refused, and there is no floor guard. See `DMRGOptions`.
-        'svd' is the RECOMMENDED default and the measured-best one here: on CUDA
-        `TorchBackend.svd` already forces driver='gesvd', which is 14-20x faster than torch's
-        `gesvdj` default at identical fp64 accuracy and gave 19.4x on truncation alone
-        / 9.91x end-to-end in dynamics. 'cutn' is offered
-        for completeness only and is NOT recommended: cuTensorNet measured just 1.16x over the
-        tnkit production path at chi=256, far below the >3x that would justify a dependency, and
-        tnkit keeps its own path.
-        The real remaining lever is precision, not algorithm -- fp32 sketch + fp64 core
-        ('randomized-mixed') measured 25-33x against 1.7-3.1x for fp64-only randomised SVD.
-    renorm  : rescale the Schmidt values to unit norm at every bond (default True, historical).
-        False leaves the truncation-induced norm loss VISIBLE to the caller.
-    L0, RN, canonicalize, keep_device : as in `tdvp1_evolve`. A window on an infinite background
-        needs `canonicalize=True` once if its centre is not at site 0; `keep_device` returns the on-device tensors instead of host copies, which matters when
-        the caller evolves many states in a loop (a two-packet collision construction that evolves
-        1 state plus several reference states was paying a full round trip per state per
-        measurement interval).
-
-    profile : optional dict. When given (or when step_callback is), it is filled with per-step
-        diagnostics — profile['steps'] = list of dicts, one per step:
-        {step, t, dt, max_chi, disc, expm_s, trunc_s, env_s, krylov_max, krylov_cap_hits}.
-        max_chi is the largest bond after the step (the entanglement-driven growth; multiplets
-        on symmetric tensors, as `chi` counts them), disc the summed relative discarded weight
-        (the validity-window signal), krylov_max the largest Krylov dimension of the step's
-        solves, krylov_cap_hits how many adaptive solves stopped at the `krylov_m` cap without
-        meeting the solver tolerance (0 on fixed schedules).
-        Adds GPU syncs, so pass it only when profiling.
-    step_callback : optional fn(step_dict, obs_or_None) called at the END of every step — lets the
-        caller flush each row to disk as it is produced, so a walltime kill preserves all completed
-        steps instead of losing everything (the append-at-end trap). obs_or_None is (t, measure(...))
-        on measured steps, else None. Implies profiling.
-    krylov_m : Krylov dimension cap of the adaptive exponential (default 30).
-    adaptive_dt : None (default, EXACTLY the old fixed-step behaviour) or a dict of controller
-        parameters — {tol, order, safety, fmin, fmax, dt_min, dt_max, tol_scale, log}. When given,
-        `dt` is the INITIAL step and `dt * n_steps` the total time; the step size is then chosen per
-        step from the frozen-j Saad estimate (see `_DtController`). Measurement times are unchanged
-        — the stepper subdivides each measurement interval evenly and lands on it exactly, never
-        overshooting — so adaptive and fixed runs produce the same time grid. Pass `log=[]` to get
-        the per-step (t, dt, est, m) trace back. SCOPE: this is a SPEED lever. `svd_tol`, not `dt`,
-        is the accuracy dial in a growing run.
-    fast_expm : as in `tdvp1_evolve` — None (default, unchanged) | 'auto' | int | dict. Note that
-        2TDVP is only ~3% of a two-packet collision run (the run switches to 1TDVP once chi has
-        saturated) and its cost is split between the Krylov exponential and the truncation SVD,
-        so the fast path's ceiling here is well below its ceiling in 1TDVP."""
+    Notes
+    -----
+    Two-site TDVP on block and symmetric tensors is supported (provisional). `fast_expm`
+    speeds up the Krylov exponentials only; in two-site TDVP much of the time is in the SVD.
+    """
     o = _tdvp_opts("tdvp2_evolve", options, legacy_kwargs)
     tl.warn_if_deprecated(o.trunc)
     _warn_gram_tol(o)
@@ -768,8 +755,7 @@ def _tdvp2(mps: MPSLike, mpo: Any, chi: int, dt: float, n_steps: int,
         if mpo_fn is not None:
             # Time-dependent H, frozen at the step MIDPOINT: the exponential midpoint rule is
             # 2nd order in h, matching the order of the Strang sweep, so no accuracy order is
-            # lost. The right environments have to be rebuilt because they contain W. Both the
-            # fixed-dt and the adaptive arm pay this identically.
+            # lost. The right environments contain W, so they are rebuilt.
             mpo[:] = [be.array(x) for x in mpo_fn(state["t"] + 0.5 * h)]
             _rebuild_right_envs()
         pstep = {"expm": 0.0, "trunc": 0.0, "env": 0.0, "disc": 0.0} if do_prof else None
@@ -953,9 +939,9 @@ def _capture_target(backend: Any) -> bool:
     imaginary part of exp(-i dt H). Block backends are excluded because block TDVP takes no step
     graphs (`_check_blocks`); the `isinstance` check also covers subclasses.
 
-    Capture records on the current device's streams, so the device index must be None or 0.
-    An explicit `cuda:0` is assumed to be the current device: after `torch.cuda.set_device(k)`
-    with k != 0, pass the unindexed `'torch-cuda'` or use graph='off'."""
+    Capture records on the current device's streams, so the device index must be None or that
+    of the current CUDA device (`torch.cuda.current_device()`; 0 when no device is visible).
+    `get_backend('torch-cuda')` is on the device current when it was built."""
     if isinstance(backend, str):
         if not backend.startswith("torch-"):
             return False
@@ -967,9 +953,19 @@ def _capture_target(backend: Any) -> bool:
     if isinstance(backend, BlockBackend):
         return False
     device = getattr(backend, "device", None)
+    index = getattr(device, "index", None)
     return (bool(getattr(backend, "is_torch", False)) and getattr(device, "type", None) == "cuda"
-            and getattr(device, "index", None) in (None, 0)
+            and (index is None or index == _current_cuda_index())
             and bool(getattr(backend, "is_complex", False)))
+
+
+def _current_cuda_index() -> int:
+    """The current CUDA device, or 0 when torch or a CUDA device is missing."""
+    try:
+        import torch
+        return torch.cuda.current_device() if torch.cuda.is_available() else 0
+    except Exception:  # noqa: BLE001 -- no usable CUDA runtime: the default device
+        return 0
 
 
 def _backend_label(backend: Any) -> Any:
@@ -991,23 +987,19 @@ def resolve_graph_mode(graph: str, backend: Any, cuda_available: Optional[bool] 
            current CUDA device (`_capture_target`) with a visible CUDA device, 'on' against
            anything else RAISES rather than falling back -- an explicit request that silently
            ran eager instead would hide a configuration bug.
-    'auto' (the default) resolves to 'capture' only on such a backend AND with a CUDA device
-           visible; every other backend -- numpy, torch-cpu, torch-mps, a real dtype, a block
-           backend, another CUDA device, or torch-cuda with no device reachable -- resolves to
-           'eager', unchanged from every version before this option existed. This is what
-           makes capture the default exactly where it is validated (bit-identical, ~2.3x on a
-           real leg) and a no-op everywhere else, including a machine without a GPU.
+    'auto' (the default) resolves to 'capture' only on such a backend and with a CUDA device
+           visible; every other backend (numpy, torch-cpu, torch-mps, a real dtype, a block
+           backend, another CUDA device, or torch-cuda with no device reachable) resolves to
+           'eager'. Capture replays the eager arithmetic bit for bit, so 'auto' changes only
+           the speed, and only where capture is available.
 
     The CUDA probe imports torch, so it runs only for a capture target. `cuda_available`
     overrides the probe -- how the CPU test suite exercises both halves of the 'auto' rule
     without a GPU.
 
-    Note for readers of `tnkit/prefix_graph_impl.py`: unlike the fixed-schedule graph
-    (`cudagraph.py`, `lanczos_expm_fixed`), prefix-graph capture never reads `expm_where` -- its
-    small exponential always runs on the host via `scipy.linalg.expm` (see that module's
-    docstring, "WHAT IS DELIBERATELY *NOT* MOVED ON-DEVICE"). So there is no `expm_where`
-    precondition for this resolver to be consistent with; making capture the default
-    introduces no new dependency on it.
+    Unlike the fixed-schedule graph (`cudagraph.py`, `lanczos_expm_fixed`), prefix-graph capture
+    never reads `expm_where`: its small exponential always runs on the host with
+    `scipy.linalg.expm` (see `tnkit.prefix_graph_impl`).
     """
     if graph not in GRAPH_MODES:
         raise ValueError(f"graph must be one of {GRAPH_MODES}, got {graph!r}")
@@ -1022,7 +1014,8 @@ def resolve_graph_mode(graph: str, backend: Any, cuda_available: Optional[bool] 
         if not supported:
             seen = f", cuda_available={avail}" if target else ""
             raise ValueError(
-                f"graph='on' requires backend='torch-cuda' with a visible CUDA device; got "
+                f"graph='on' requires a complex torch backend on the current CUDA device "
+                f"(backend='torch-cuda') with a visible CUDA device; got "
                 f"backend={_backend_label(backend)!r}{seen}. Use graph='auto' to fall back "
                 f"to the eager path automatically on this backend, or graph='off' to disable "
                 f"capture explicitly.")
@@ -1147,32 +1140,47 @@ def _graphed_site_step_prefix(M, L, R, mpo, i, be, gc, direction):
 def tdvp1_evolve(mps: MPSLike, mpo: Any, dt: float, n_steps: int,
                  options: Optional[Union[TDVPOptions, Dict[str, Any]]] = None,
                  **legacy_kwargs: Any) -> Tuple[MPS, List[Tuple[float, Any]]]:
-    """ONE-site TDVP. Strictly bond-dimension preserving: no SVD, no truncation, so it is
-    symplectic and conserves energy exactly, but it CANNOT grow entanglement -- the state stays
-    on the fixed-chi manifold and pays a projection error instead of a truncation error.
+    """One-site TDVP: real-time evolution at fixed bond dimensions.
 
-    That trade is the point. Measurement showed reachable time is
-    only logarithmic in chi, so raising chi is a weak lever; the remaining question is whether a
-    FIXED chi is better spent by 2TDVP (grow then truncate) or 1TDVP (never truncate). Standard
-    practice is 2TDVP early, then 1TDVP once chi has saturated.
+    No SVD and no truncation, so the integrator is symplectic and conserves the energy and the
+    norm up to the Krylov tolerance, but it cannot grow entanglement: the state stays on the
+    manifold of its initial bond dimensions and pays a projection error instead of a truncation
+    error. A common schedule is two-site TDVP until the bonds reach their cap, then one-site
+    TDVP (`TDVPEvolver` with '12site' does this per bond).
 
-    adaptive_dt : as in `tdvp2_evolve` — None (default) keeps the exact fixed-step behaviour.
-    fast_expm : None (default, unchanged) | 'auto' | int. The GPU fast path — a FIXED-length
-        Krylov schedule (`eigensolver.lanczos_expm_fixed`) with no device→host synchronisation,
-        no host `scipy.expm`, and batched re-orthogonalisation. 'auto' runs the FIRST sweep on
-        the ordinary adaptive solver, reads the largest Krylov dimension it actually needed, and
-        freezes the schedule 25% above it for the rest of the run; an int freezes it directly.
-        Incompatible with `adaptive_dt` (which needs the per-step Saad estimate that only the
-        adaptive solver produces) — the combination raises rather than silently mis-stepping.
-    krylov_m : Krylov dimension cap of the adaptive exponential (default 30).
-    step_callback : optional fn(step_dict, obs_or_None) called at the end of every step, with
-        step_dict = {step, t, dt, krylov_max, krylov_cap_hits}; obs_or_None as in
-        `tdvp2_evolve`. Not available
-        with `adaptive_dt`.
+    Parameters
+    ----------
+    mps : sequence of tensors
+        The initial state, rank-3 tensors ``(left, phys, right)``, sites numbered from 0. Its
+        bond dimensions are kept throughout.
+    mpo : sequence of tensors, or callable
+        The Hamiltonian, axes ``(wl, wr, out, in)``, any range; a callable ``t -> MPO`` is
+        evaluated at the midpoint of each step.
+    dt : float
+        Time step, > 0. Each step applies ``exp(-i H dt)`` (hbar = 1), in the time units of
+        `mpo`'s energies.
+    n_steps : int
+        Number of steps, >= 0; the total time is ``dt * n_steps``.
+    options : TDVPOptions or dict, optional
+        Settings; see `TDVPOptions` for every field, its default and its range.
+    **legacy_kwargs
+        Any field of `TDVPOptions` that this integrator takes, passed flat. A keyword
+        overrides the same field of `options`; a field of the other integrator raises.
 
-    Settings may be passed flat, exactly as before, or grouped in a `TDVPOptions`
-    (a flat keyword overrides the corresponding field of an options object given
-    alongside it). The returned state is an `MPS`, which is a `list` subclass.
+    Returns
+    -------
+    mps : MPS
+        The evolved state on the backend used, with its orthogonality centre at site 0
+        (``mps.center == 0``) and every other site right-canonical.
+    records : list of (float, object)
+        ``(t, measure(state))`` at t = 0 and every `meas_every` steps; empty when `measure`
+        is None.
+
+    Notes
+    -----
+    One-site TDVP runs on block and symmetric tensors (provisional); its bond sectors are those
+    of the initial state. `fast_expm`, `cuda_graph`, `prefix_graph` and `graph` are GPU options
+    (see `TDVPOptions`).
     """
     return _tdvp1(mps, mpo, dt, n_steps, _tdvp_opts("tdvp1_evolve", options, legacy_kwargs))
 
@@ -1276,17 +1284,15 @@ def _tdvp1(mps: MPSLike, mpo: Any, dt: float, n_steps: int,
                 "one thing a capture cannot contain. See tnkit/cudagraph.py.")
         if cache is not None and cache.get("recal", FAST_EXPM_RECAL):
             raise ValueError(
-                "cuda_graph requires recal=0. The re-measurement sweep runs the ADAPTIVE "
-                "solver, so every 25th step would have a different kernel sequence and a "
-                "different cost; mixing it into a graphed timing arm would price a "
-                "structurally different step. Freeze m explicitly instead.")
+                "cuda_graph requires recal=0. The re-measurement sweep runs the adaptive "
+                "solver, so every recal-th step would have a different kernel sequence. Fix m "
+                "explicitly instead.")
         state["gc"] = cuda_graph
     state["pgc"] = None
     if prefix_graph is not None:
-        # OVERSHOOT-AND-TRUNCATE MODE. The precondition is the OPPOSITE of
-        # `cuda_graph`'s: this path captures the ADAPTIVE solver's own loop and applies the
-        # adaptive stop rule on the host after replay, so a frozen schedule would defeat the
-        # entire point -- there would be nothing left that is bit-identical to production.
+        # Overshoot-and-truncate mode. Unlike `cuda_graph`, this path captures the adaptive
+        # solver's own loop and applies its stopping rule on the host after replay, so it
+        # needs the adaptive solver: a fixed schedule would change the arithmetic.
         if cuda_graph is not None:
             raise ValueError("cuda_graph and prefix_graph are alternatives, not a stack.")
         if fm is not None and fm.get("m"):

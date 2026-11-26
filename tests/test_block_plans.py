@@ -394,3 +394,58 @@ def test_default_limit_on_cuda(default_limit):
     assert info["limit_source"] == "default-device"
     assert info["max_bytes"] == min(4096, int(0.3 * total / 2 ** 20)) * 2 ** 20
     B.clear_cache()
+
+
+@pytest.mark.parametrize("top", [20_000, 1 << 40])
+@pytest.mark.parametrize("piece", [1, 3, 7, 1 << 22])
+@pytest.mark.parametrize("seed", range(6))
+def test_expansion_in_slices_gives_the_same_index(monkeypatch, top, piece, seed):
+    """Runs cut into slices of `piece` positions, for straight, permuted and transposed boxes (both
+    run forms), on numpy and torch; an int64 index when the source buffer is beyond int32."""
+    torch = pytest.importorskip("torch")
+    monkeypatch.setattr(B, "_EXPAND_SLICE", piece)
+    rng = np.random.default_rng(seed)
+    m = int(rng.integers(2, 4))
+    shp = rng.integers(2, 9, size=(int(rng.integers(1, 7)), m))
+    sizes = shp.prod(1)
+    dst0 = np.cumsum(sizes) - sizes
+    straight = B._row_major_rows(shp)
+    permuted = np.stack([np.array(B._row_major(s))[rng.permutation(m)] for s in shp])
+    transposed = np.stack([np.array(B._row_major(s[::-1]))[::-1] for s in shp])
+    forms = set()
+    for ss, ds in ((straight, straight), (permuted, straight), (permuted, transposed)):
+        args = (rng.integers(0, 40, size=len(shp)) * (top // 64), shp, ss, dst0, ds)
+        want = _explicit(*args)
+        ix = B._Index.from_runs(B._runs(*args), top, int(sizes.sum()))
+        forms.add(len(ix._runs))
+        dtype = np.int32 if top < 2 ** 31 else np.int64
+        got = ix._expand(np)
+        assert got.dtype == dtype and np.array_equal(got, want)
+        got = ix._expand(torch, torch.device("cpu"))
+        assert got.dtype == getattr(torch, dtype.__name__) and np.array_equal(got.numpy(), want)
+    assert forms == {3, 5}
+
+
+@pytest.mark.parametrize("scatter", [False, True])
+def test_expansion_temporaries_are_bounded(monkeypatch, scatter):
+    """2^21 positions in slices of 2^15, as one run or as two interleaved ones (written by
+    scatter): the traced peak stays near the int32 result (8 MB), far below the int64
+    temporaries of a single pass (about 4 to 7 x 16 MB)."""
+    import tracemalloc
+    monkeypatch.setattr(B, "_EXPAND_SLICE", 1 << 15)
+    n = 1 << 21
+    one = np.ones(1, np.int64)
+    if scatter:
+        runs = (np.array([0, n // 2]), 1 + 0 * one, np.array([0, 1]), 2 + 0 * one, n // 2 + 0 * one)
+    else:
+        runs = (0 * one, one, 0 * one, one, n * one)
+    ix = B._Index.from_runs(tuple(np.broadcast_to(r, (1 + scatter,)).astype(np.int64)
+                                  for r in runs), n, n)
+    assert len(ix._runs) == (5 if scatter else 3)
+    tracemalloc.start()
+    idx = ix._expand(np)
+    peak = tracemalloc.get_traced_memory()[1]
+    tracemalloc.stop()
+    order = idx.reshape(-1, 2).T.ravel() if scatter else idx
+    assert np.array_equal(order, np.arange(n)) and idx.dtype == np.int32
+    assert peak < 4 * n + 64 * (1 << 15) + (1 << 20)

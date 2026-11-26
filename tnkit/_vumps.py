@@ -1,38 +1,32 @@
-"""VUMPS — Variational Uniform Matrix Product States (Zauner-Stauber, Vanderstraeten,
-Fishman, Verstraete, Haegeman, PRB 97, 045145 (2018); tangent-space notes
-arXiv:1810.07006).
+"""VUMPS, the variational uniform MPS algorithm (Zauner-Stauber, Vanderstraeten, Fishman,
+Verstraete and Haegeman, PRB 97, 045145 (2018); tangent-space notes arXiv:1810.07006).
 
-Why: the pure-growth iDMRG (tnkit/idmrg.py) is *not* variational on the
-uniform manifold and under-converges at criticality, so it gives only qualitative
-finite-entanglement scaling. VUMPS optimises directly on the uniform, fixed-χ MPS
-manifold — its environments are self-consistent — so it reaches the true critical
-fixed point and yields clean central charge c and FES exponent κ from χ-scaling.
+VUMPS optimises directly on the manifold of uniform MPSs of fixed bond dimension, with
+self-consistent environments, so it reaches the critical fixed point and gives the central
+charge c and the finite-entanglement exponent kappa from the chi scaling. Pure-growth iDMRG
+(`tnkit.idmrg`) is not variational on that manifold and converges poorly at criticality.
 
-State: a single-site uniform iMPS {AL, AR, AC, C} with
+State: a single-site uniform MPS {AL, AR, AC, C} with
   AL left-canonical  (Σ_s AL_s† AL_s = I),   AR right-canonical (Σ_s AR_s AR_s† = I),
-  AC = AL·C = C·AR   (center tensor and bond matrix).
+  AC = AL·C = C·AR   (centre tensor and bond matrix).
 Index order: A[a,s,b] (left bond, physical, right bond); C[a,b]; MPO W[wl,wr,s,s'].
 
-Each iteration (matrix-free where it matters — the two effective eigenproblems reuse
-the same on-GPU Lanczos as DMRG, which is the GPU-ready argument):
-  1. left/right MPO environments FL, FR via the triangular recursion; the energy
-     (identity-diagonal) channel needs a regularised geometric-series solve (leading
-     transfer eigenvalue projected out) — done matrix-free: the fixed point is a k=1
-     Arnoldi eigenvector and the projected system is solved by GMRES, with the
-     transfer applied as an O(D^3 d) einsum (never a dense D^2 x D^2 matrix).
-  2. new AC = ground state of H_AC (= apply_one_site with FL,W,FR); new C = ground
-     state of the zero-site H_C — both via the matrix-free lanczos_ground.
-  3. gauge-fix AL, AR by polar decompositions of AC and C.
-Convergence: ε = max(‖AC − AL·C‖, ‖AC − C·AR‖) (tangent-space gradient) → 0.
+Each iteration:
+  1. left and right MPO environments FL, FR by the triangular recursion; the energy
+     (identity-diagonal) channel needs a regularised geometric-series solve with the leading
+     transfer eigenvalue projected out. It is matrix-free: the fixed point is a k=1 Arnoldi
+     eigenvector and the projected system is solved by GMRES, with the transfer applied as an
+     O(D^3 d) einsum (never a dense D^2 x D^2 matrix).
+  2. new AC = ground state of H_AC (`apply_one_site` with FL, W, FR); new C = ground state of
+     the zero-site H_C; both by the matrix-free `lanczos_ground`.
+  3. AL and AR from polar decompositions of AC and C.
+Convergence: ε = max(‖AC − AL·C‖, ‖AC − C·AR‖) (the tangent-space gradient) → 0.
 
-**Backend-agnostic (the GPU port).** Every heavy contraction — the transfer einsums,
-the environment recursions, the two Lanczos eigensolves, the polar SVDs — dispatches
-through a backend (`backend=` arg: numpy / torch-cpu / torch-cuda), so the whole
-optimisation runs on the GPU with no host round-trip on the O(D^3) work. The Arnoldi
-fixed point and the GMRES energy channel are the backend-native Krylov solvers in
-`tnkit/krylov.py` (only their tiny m x m projected problems touch host numpy). This is
-what lets χ grow past the CPU-scipy ceiling (χ≈24-48 near criticality). e₀ validated vs
-the exact free-fermion density to machine precision, and torch-cpu == numpy to ~1e-12.
+Every heavy contraction (the transfer einsums, the environment recursions, the two Lanczos
+solves, the polar SVDs) goes through a backend (`backend=`: numpy, torch-cpu, torch-cuda), so
+the optimisation runs on a GPU with no host round trip on the O(D^3) work. The Arnoldi fixed
+point and the GMRES energy channel are the backend-native Krylov solvers of `tnkit.krylov`;
+only their small projected problems run in host numpy.
 """
 from __future__ import annotations
 import dataclasses
@@ -130,12 +124,12 @@ def _tRadj(Y, A, be):   # adjoint of the right transfer
 def _validate_fixed_point(l, apply_adj, A, D, be, tol, where):
     """Hermitise, trace-normalise and VERIFY that `l` really is the reduced density matrix.
 
-    Every check here exists because one of them failed silently and cost a data point: at
-    g_x=1, g_z=0.16, chi=32 this returned a near-traceless, indefinite matrix that
-    the bare `l / tr(l)` then amplified by 1.4e11.
+    At a chi well above the state's Schmidt rank the eigensolver can return a near-traceless,
+    indefinite matrix, which a bare `l / tr(l)` would amplify by orders of magnitude; each
+    check below catches one form of that.
 
-    Order matters. The trace test must come BEFORE the division, because dividing by a rounding
-    residue is exactly the amplification we are trying to catch.
+    Order matters. The trace test comes before the division, because dividing by a rounding
+    residue is the amplification to be caught.
     """
     l = 0.5 * (l + be.einsum("ab->ba", l).conj())
     nrm = abs(complex(be.to_scalar(be.norm(l))))
@@ -182,22 +176,20 @@ def _left_fixed_point(apply_adj, A, D, be, tol=1e-9, rho_hint=None):
 
     `rho_hint` is the EXACT closed form of this fixed point, which the caller knows: for the
     left environment it is C C^dag, for the right environment conj(C^dag C). Supplying it is
-    not an optimisation, it is the fix for a silent-wrong-answer bug.
+    not an optimisation: without it the fixed point can be wrong with no warning (below).
 
     WHY THE ARNOLDI ALONE IS NOT SAFE
     ---------------------------------
     A is an exact isometry (it comes out of a polar decomposition), so eigenvalue 1 of the
     transfer operator is guaranteed to exist -- but its multiplicity equals the number of
-    decoupled blocks of the channel, and is only ONE when A acts irreducibly. Run at a chi far
-    above the state's Schmidt rank (chi=32 for a state that needs 9, as at g_x=1, g_z=0.16) and
-    the numerically null block decouples: a spurious second eigenvalue appears within 6e-4 of 1,
-    and a k=1 Arnoldi returns an arbitrary mixture of the two. The spurious fixed point is
-    traceless, so tr(l) becomes a difference of near-equal numbers -- measured -7e-12 on one
-    machine and +1.003 on another, from the identical VUMPS state. `l / tr(l)` then scaled the
-    "density matrix" by 1.4e11, e0 = (l|Y) came out as 2.3e11 instead of -1.401, the energy
-    channel stopped converging, ||FL|| reached 1.4e15, and the excitation solver reported
-    m_1 = -2.5e10. That was recorded as a "platform-dependent" bug; the platform only chose
-    which side of the rounding the trace landed on.
+    decoupled blocks of the channel, and is only one when A acts irreducibly. At a chi far above
+    the state's Schmidt rank the numerically null block decouples: a spurious second eigenvalue
+    appears close to 1, and a k=1 Arnoldi returns an arbitrary mixture of the two. The spurious
+    fixed point is traceless, so tr(l) becomes a difference of near-equal numbers whose sign and
+    size depend on rounding (and so on the machine). `l / tr(l)` then scales the "density
+    matrix" by a huge factor, e0 = (l|Y) is wrong by as much, the energy channel stops
+    converging, and anything built on the environments (such as the excitation solver) is
+    corrupted.
 
     Starting the Arnoldi from rho_hint (rather than from the identity) keeps the Krylov space
     inside the physical block, and _validate_fixed_point then refuses anything that is not a
@@ -252,43 +244,31 @@ def _energy_channel(Y, apply_T, A, l, D, be, gmres_tol=1e-9):
 class EnergyReadoutError(RuntimeError):
     """`vumps` was given a Hamiltonian it cannot read an energy density off.
 
-    Raised when a custom `mpo` is supplied without the matching `bond_h`/`triple_h`, so the only
-    available readout would be `_energy_density`'s TFIM formula −⟨sx_i sx_{i+1}⟩ − g⟨sz_i⟩ —
-    which silently drops every term the custom MPO added.
-
-    WHY AN EXCEPTION AND NOT A SILENT CORRECTION. The bug this guard closes ran
-    for months: every mixed-field caller passed `mpo=mixed_field_bulk_mpo(g, h)` and no `bond_h`,
-    so `gs["e0"]` came back short by exactly h⟨sx⟩ (0.08255394 at g_x = 1, g_z = 0.10) while the
-    *state* was perfectly correct — there was nothing to notice, and the wrong e₀ propagated into
-    the `Ws[0,2] -= e0*I` anti-aliasing shift of a two-packet collision run. Reconstructing the
-    missing term from the MPO here would fix this instance and hide the next one (a three-site
-    term, a staggered field, a different automaton layout). The caller knows its own
-    Hamiltonian; it must say so. See `_check_energy_readout`.
+    Raised when a custom `mpo` comes without the matching `bond_h` or `triple_h`. The only
+    readout left would be the TFIM formula −⟨sx_i sx_{i+1}⟩ − g⟨sz_i⟩ of `_energy_density`,
+    which drops every term the custom MPO adds (for the mixed-field chain, h⟨sx⟩ per site)
+    while the state itself is correct, so nothing else would show the error. The caller knows
+    its Hamiltonian and must pass its local energy operator. See `_check_energy_readout`.
     """
 
 
 def _check_energy_readout(g, mpo, bond_h, triple_h, on_mpo_mismatch):
     """Refuse to report a TFIM e₀ for a Hamiltonian that is not the TFIM at this g.
 
-    Called ONCE, before the optimisation loop, so a mis-specified run dies in a second rather
-    than after 600 iterations. If `bond_h` or `triple_h` is given the readout is the caller's
-    own operator and nothing is checked. Otherwise the readout will be `_energy_density(...,g)`,
-    which is correct only if `mpo` IS `tfim_bulk_mpo(g)` — so that is exactly what is compared.
+    Called once, before the optimisation loop, so a mis-specified run stops at once. If
+    `bond_h` or `triple_h` is given the readout is the caller's own operator and nothing is
+    checked. Otherwise the readout is `_energy_density(..., g)`, correct only if `mpo` is
+    `tfim_bulk_mpo(g)`, so that is what is compared.
 
-    on_mpo_mismatch: "raise" (default) | "ignore" (reproduce the pre-guard numbers verbatim,
-    to reproduce old results only — never for new ones), mirroring `xi_on_padding`.
+    on_mpo_mismatch: "raise" (default) | "ignore" (return the TFIM readout anyway).
     """
     if on_mpo_mismatch not in ("raise", "ignore"):
         raise ValueError(f"on_mpo_mismatch must be raise|ignore, got {on_mpo_mismatch!r}")
     if mpo is None or bond_h is not None or triple_h is not None:
         return
     W_tfim = tfim_bulk_mpo(g)
-    # A caller may hand in a device-resident MPO -- a CUDA tensor -- and `np.asarray`
-    # on one raises a torch TypeError about `.numpy()` instead of the message below.
-    # The guard runs before the optimisation loop precisely so a mis-specified run
-    # costs a second rather than six hundred iterations, and it should not turn that
-    # second into a stack trace about array conversion. An MPO that cannot be compared
-    # is treated as a mismatch, and the reason is said out loud.
+    # A device-resident MPO (a CUDA tensor) makes `np.asarray` raise a torch TypeError; such
+    # an MPO is treated as a mismatch, with the reason in the message.
     try:
         W = np.asarray(mpo)
         same = bool(W.shape == W_tfim.shape
@@ -311,35 +291,21 @@ def _check_energy_readout(g, mpo, bond_h, triple_h, on_mpo_mismatch):
         f"vumps(g={g}) was given a custom `mpo` that is not tfim_bulk_mpo({g}) "
         f"({detail}) and neither `bond_h` nor `triple_h`. The only energy "
         f"readout available would be the TFIM formula -<sx sx> - g<sz>, which silently drops "
-        f"every extra term — for the mixed-field chain that is exactly -h<sx> per site, and it "
-        f"is what an `-e0` MPO shift for a time-evolution window relies on. Refusing to return "
+        f"every extra term (for the mixed-field chain, -h<sx> per site). Refusing to return "
         f"e0.\n"
         f"  Fix: vumps(g, chi, ..., mpo=mixed_field_bulk_mpo(g, h), "
         f"bond_h=mixed_field_bond_h(g, h))\n"
-        f"  (three-site models: triple_h=improved_triple_h(g, h, lam); reproducing a pre-fix "
-        f"result: on_mpo_mismatch='ignore')")
+        f"  (three-site models: triple_h=improved_triple_h(g, h, lam); to return the TFIM "
+        f"readout anyway: on_mpo_mismatch='ignore')")
 
 
-#: The two internals an A/B driver replaces, in one mutable registry.
-#:
-#: WHY A DICT AND NOT A MODULE GLOBAL. A driver may run a legacy arm that puts the earlier (unguarded)
-#: fixed point and the unchecked energy channel back, so the legacy columns are a true replay
-#: of the code that produced the original results rather than the old formula evaluated on a
-#: new state. Drivers used to do it
-#: by rebinding module globals through `import tnkit.vumps as V`. That import no longer
-#: hands back this module -- `tnkit.vumps` is the FUNCTION now (see `tnkit/_shim.py`) --
-#: and a rebinding through a shim would not reach the implementation's own globals even if
-#: it did, because rebinding a name in one namespace never changes another.
-#:
-#: A dict is immune to both problems: every path to it (`tnkit._vumps._HOOKS`,
-#: `tnkit.vumps._HOOKS` through the shim, `tnkit.vumps._HOOKS` through the exported
-#: function's compatibility attribute) is the SAME OBJECT, so a mutation is visible to the
-#: functions below no matter which one the driver reached for. `_EIGSOLVERS` in
-#: `tnkit/_dmrg.py` already had that shape, and this mirrors it deliberately.
-#:
-#: The failure this closes is silent, which is why `tests/test_api.py` pins it by RUNNING a
-#: patched arm and asserting the patch was called -- an arm reporting a number for code it
-#: never ran is the one outcome no amount of care catches by inspection.
+#: The two internals a caller may replace (for instance to compare another fixed-point or
+#: energy-channel solver), in one mutable registry. A dict rather than module globals: every
+#: path to it (`tnkit._vumps._HOOKS`, `tnkit.vumps._HOOKS` through the shim and through the
+#: exported function's attribute) is the same object, so a replacement is seen by the
+#: functions below whichever path was used. Rebinding a global through `tnkit.vumps`, which
+#: is the function (see `tnkit/_shim.py`), would not reach this module. `_EIGSOLVERS` in
+#: `tnkit/_dmrg.py` has the same shape.
 _HOOKS = {
     "left_fixed_point": _left_fixed_point,
     "energy_channel": _energy_channel,
@@ -405,9 +371,8 @@ def _transfer_spectrum(AL, D, be, k=4):
     rng = np.random.default_rng(1234)
     v0 = (rng.standard_normal(D * D) + 1j * rng.standard_normal(D * D))
     # Krylov cap scales with D: a fixed m=64 under-resolves λ₂,λ₃ once D²≫64 (D≳16), giving
-    # an erratic, non-monotonic ξ₂ at large χ even for a well-converged state (measured in the
-    # χ=8..128 ladder: ξ₂ bounced 330→880→1269→382 at χ=48..128). Cap at 256 and
-    # allow more restarts so the sub-leading transfer spectrum is actually resolved.
+    # an erratic, non-monotonic ξ₂ at large χ even for a well-converged state. Cap at 256 and
+    # allow more restarts so the sub-leading transfer spectrum is resolved.
     ev, _ = eigs_dominant(apply, be.array(v0), be,
                           k=k, want_vectors=False, m=min(D * D - 2, 256), tol=1e-11,
                           restarts=100)
@@ -441,19 +406,12 @@ def _correlation_lengths(AL, D, be, C=None, rank_tol=1e-12, on_padding="deflate"
     In that regime λ₂ is not the state's subleading transfer eigenvalue at all — it belongs
     to the padding, and ξ₂ = −1/ln|λ₂| measures the noise floor of the polar decomposition.
 
-    Measured at g_x=1, g_z=0.16 (the reproducer state for this bug, Schmidt rank 9):
+    The error is large and inflates the correlation length: once χ exceeds the Schmidt rank,
+    the undeflated ξ₂ grows with χ while the physical one converges.
 
-        χ = 8   rank 8    ξ₂ = 0.9497         (no padding)
-        χ = 16  rank 16   ξ₂ = 0.9679         (no padding)
-        χ = 32  rank 19   ξ₂ = 10.157 naive → 0.9710 deflated
-
-    A **factor of ten**, in the direction that inflates the correlation length — the physical
-    ξ₂ is converging to ≈0.97 and the naive answer runs away with χ instead.
-
-    Note that a near-1 λ₂ is NOT by itself diagnostic: at criticality a genuine ξ₂ = 574 also
-    puts |λ₂| within 1.7e-3 of 1, closer than the 6.3e-4 spurious eigenvalue found here. The
-    only clean discriminator is deflation — a physical λ₂ lives inside supp(ρ) and survives
-    the projection; a null-block λ₂ vanishes with the block it came from.
+    A |λ₂| near 1 is not by itself a sign of padding: at criticality a genuine large ξ₂ also
+    puts |λ₂| close to 1. Deflation tells them apart: a physical λ₂ lives inside supp(ρ) and
+    survives the projection; a null-block λ₂ vanishes with its block.
 
     Parameters
     ----------
@@ -462,8 +420,8 @@ def _correlation_lengths(AL, D, be, C=None, rank_tol=1e-12, on_padding="deflate"
         function cannot tell padding from physics, computes the naive answer, and marks
         ``info["assessed"] = False``. Callers inside this module always pass it.
     rank_tol : relative singular-value cut that decides WHETHER the state is padded
-        (default 1e-12 — below the polar-decomposition noise floor of a converged VUMPS run,
-        and 2½ decades below the smallest Schmidt value a critical χ=128 state carries).
+        (default 1e-12, below the polar-decomposition noise floor of a converged VUMPS run
+        and well below the smallest Schmidt values of a critical state).
     cut_max, iso_tol : where the cut is actually TAKEN is then chosen, not assumed — see the
         comment in the body. The ladder runs rank_tol → cut_max in decades and the finest cut
         whose deflated tensor is still isometric to `iso_tol` wins. `info["cut_is_clean"]` is
@@ -472,8 +430,7 @@ def _correlation_lengths(AL, D, be, C=None, rank_tol=1e-12, on_padding="deflate"
     on_padding : "deflate" (default) | "raise" | "ignore".
         "deflate" restricts the transfer operator to supp(ρ) and reports the deflated ξ.
         "raise" raises TransferSpectrumPaddingError when the deflation moves ξ₂ by more than
-        `shift_tol` (relative). "ignore" reproduces the pre-guard numbers verbatim — for
-        reproducing old results, never for new ones.
+        `shift_tol` (relative). "ignore" returns the undeflated ξ.
     return_info : also return the diagnostics dict.
     """
     if on_padding not in ("deflate", "raise", "ignore"):
@@ -504,18 +461,16 @@ def _correlation_lengths(AL, D, be, C=None, rank_tol=1e-12, on_padding="deflate"
     # ---- choose WHERE to cut, then deflate ----------------------------------------------
     # rank_tol only decides *whether* the state is padded. It is a bad choice of *where* to
     # cut, because a Schmidt tail that straddles it leaves residual near-null directions
-    # inside the retained block and they carry the same spurious spectrum. Measured at
-    # g_x=1, g_z=0.16, chi=20 the padding fraction is only 5% (r=19 of 20) and yet the naive
-    # xi2 = 9.28 against a physical 0.965; cutting at 1e-12 gives 3.46 -- still wrong -- and
-    # cutting at 1e-10 (r=13) gives 0.9652. One extra direction is enough to ruin it, so the
-    # cut cannot be a magic constant.
+    # inside the retained block and they carry the same spurious spectrum. Even a single
+    # near-null direction left in the block can make xi2 several times too large, so the cut
+    # cannot be a fixed constant.
     #
     # It does not have to be. The restricted tensor must still be a left-canonical MPS tensor
     # on its block: if the cut separated weight from rounding then supp(rho) is invariant
     # under AL and ||sum_s ALr_s^dag ALr_s - 1|| ~ 0; if it cut through real weight, or kept
-    # directions that leak into the discarded ones, the defect is orders of magnitude larger.
-    # Measured defects: 1.0e-3 / 2.2e-3 (good cuts) against 3.5e-2 / 1.4e-1 (bad ones). So
-    # walk the ladder from rank_tol upward and take the FINEST cut that is self-consistent.
+    # directions that leak into the discarded ones, the defect is an order of magnitude or more
+    # larger (good cuts give about 1e-3, bad ones 1e-2 to 1e-1, hence `iso_tol`). So walk the
+    # ladder from rank_tol upward and take the FINEST cut that is self-consistent.
     # The isometry defect is an einsum, not an eigensolve, so the walk is nearly free.
     cuts, c = [rank_tol], rank_tol * 10.0
     while c <= cut_max * (1 + 1e-12):
@@ -667,14 +622,11 @@ def _expand(AL, AR, C, new_D, rng, noise=1e-6):
     environment solves start from a good point and the outer loop converges in far fewer
     iterations (and to the right fixed point, not a stalled one).
 
-    Seed magnitude is critical near criticality. The earlier version used noise=1e-2 AND
-    added `noise·diag(randn)` to the *whole* C diagonal — so it perturbed the converged
-    Schmidt values and gave the new bonds weight ~1e-2, *larger* than the true near-critical
-    Schmidt tail (~1e-4..1e-5). That kicked the state off the fixed point and collapsed χ=32
-    in the ramped critical scan (a fresh χ=32 converged fine, isolating the ramp seeding as
-    the cause). Now: the converged block is preserved
-    exactly, and only the *new* bonds are seeded, with a tiny deterministic Schmidt weight
-    just below the retained spectrum so VUMPS grows them from near-machine level."""
+    Seed magnitude matters near criticality. Noise added to the whole C diagonal, or new bonds
+    seeded with a weight above the true Schmidt tail (about 1e-4 to 1e-5 there), kicks the
+    state off the fixed point and can stall the larger-χ run. So the converged block is kept
+    exactly, and only the new bonds are seeded, with a tiny deterministic Schmidt weight just
+    below the retained spectrum, so that VUMPS grows them from near machine level."""
     AL, AR, C = _to_np(AL), _to_np(AR), _to_np(C)
     D, d, _ = AL.shape
     if new_D <= D:
@@ -700,45 +652,57 @@ def _expand(AL, AR, C, new_D, rng, noise=1e-6):
 
 @dataclasses.dataclass
 class VUMPSOptions:
-    """Everything `vumps` can be told, apart from the two things it cannot run
-    without (`g` and `chi`).
+    """Settings of `vumps`, apart from `g` and `chi`. Every field can also be passed to `vumps`
+    as a keyword, with the same default.
 
-    The flat signature took sixteen keywords. They are the same keywords with the
-    same names and the same defaults -- this is a grouping, not a redesign -- so
-    `VUMPSOptions()` reproduces the historical behaviour exactly, and every field
-    can still be passed flat to `vumps`. Grouping them buys what it bought `dmrg`:
-    one settings object reused across a chi ladder, `dataclasses.replace` for a
-    single-field A/B arm, and an object that can be printed or written to JSON as
-    the record of how a number was produced.
-
-    Convergence
-    -----------
-    n_iter    : hard cap on VUMPS iterations.
-    tol       : stop once the tangent-space gradient eps falls below this.
-    seed      : seeds the random initial state (ignored when `init` is given).
-    init      : {AL, AR, C} from a converged smaller-chi run to ramp from
-                (see `_expand`); None starts from a random left-canonical seed.
-    verbose   : print e0 and eps every twenty iterations.
-
-    Environments and local solves
-    -----------------------------
-    backend     : 'numpy' | 'torch-cpu' | 'torch-cuda', or a Backend object.
-    env_tol     : Arnoldi fixed-point + GMRES channel tolerance in the environments.
-    local_tol   : tolerance of the H_AC / H_C Lanczos ground-state solves.
-    m_local_cap : Krylov cap of those local solves; None -> the original
-                  min(80, 4*chi).
-    trace       : record a per-iteration trajectory under the "trace" key.
-
-    Hamiltonian and the energy readout
-    ----------------------------------
-    mpo, bond_h, triple_h, on_mpo_mismatch : read the note in `vumps` before
-                touching these. A custom `mpo` without a matching bond operator
-                RAISES; that guard is the whole point of `EnergyReadoutError`.
-
-    Transfer spectrum
-    -----------------
-    xi_on_padding : 'deflate' (default) | 'raise' | 'ignore'.
-    xi_rank_tol   : relative singular-value cut defining the Schmidt rank.
+    Parameters
+    ----------
+    n_iter : int, default 200
+        Maximum number of VUMPS iterations.
+    tol : float, default 1e-10
+        Stop once the tangent-space gradient eps falls below this.
+    seed : int, default 0
+        Seeds the random initial state (ignored when `init` is given).
+    init : dict or None, default None
+        {AL, AR, C} of a converged run at a smaller chi to start from (padded by `_expand`);
+        None starts from a random left-canonical state.
+    verbose : bool, default False
+        Print e0 and eps every 20 iterations.
+    backend : str or backend, default 'numpy'
+        'numpy', 'torch-cpu' or 'torch-cuda' (complex), or a backend object; every O(D^3)
+        contraction runs there.
+    env_tol : float, default 1e-9
+        Tolerance of the Arnoldi fixed point and the GMRES energy channel of the environments.
+    local_tol : float, default 1e-10
+        Tolerance of the H_AC and H_C Lanczos ground-state solves.
+    m_local_cap : int or None, default None
+        Krylov cap of those local solves. None: ``min(80, 4 chi)``. An int uses
+        ``min(m_local_cap, D d D - 1)``, so it can exceed ``4 chi``; eps cannot fall below the
+        local-solve error, and ``min(80, 4 chi)`` can under-resolve H_AC at large chi.
+    trace : bool, default False
+        Record a per-iteration trajectory (it, e0, eps, local H_AC residual, smallest singular
+        value of C) under the key "trace".
+    mpo : ndarray or None, default None
+        A custom bulk MPO tensor ``(D, D, 2, 2)``; None is `tfim_bulk_mpo(g)`. Only spins 1/2
+        (d = 2) are supported; another d raises `ValueError`. The state is
+        optimised against it, but `e0` is read off local expectation values, so a custom MPO
+        needs the matching `bond_h` or `triple_h`; without one `vumps` raises
+        `EnergyReadoutError`.
+    bond_h : ndarray or None, default None
+        The two-site energy operator, shape ``(d, d, d, d)``, whose expectation is e0 (for
+        example `mixed_field_bond_h`).
+    triple_h : ndarray or None, default None
+        The three-site energy operator, shape ``(d,) * 6``, for three-site models
+        (`improved_triple_h`).
+    on_mpo_mismatch : {'raise', 'ignore'}, default 'raise'
+        'ignore' returns the TFIM readout for a custom `mpo` without `bond_h` or `triple_h`.
+    xi_on_padding : {'deflate', 'raise', 'ignore'}, default 'deflate'
+        How the correlation lengths treat a chi above the Schmidt rank: 'deflate' restricts the
+        transfer operator to the support of C C† first, so xi measures the state and not the
+        padding; 'raise' raises `TransferSpectrumPaddingError` when that changes xi; 'ignore'
+        returns the undeflated values. See `_correlation_lengths`.
+    xi_rank_tol : float, default 1e-12
+        Relative singular-value cut defining the Schmidt rank.
     """
 
     n_iter: int = 200
@@ -760,7 +724,7 @@ class VUMPSOptions:
 
 
 class UniformMPS(dict):
-    """The result of `vumps`: a dict, as before, whose keys are also attributes.
+    """The result of `vumps`: a dict whose keys are also attributes.
 
     ``gs["AL"]``, ``gs.get("trace")`` and ``"trace" in gs`` keep working; ``gs.AL`` is the
     same object. Keys: e0, S, xi, xi3, svals, eps, iters, xi_info, AL, AR, AC, C, and
@@ -778,49 +742,41 @@ class UniformMPS(dict):
 def vumps(g, chi: Optional[int] = None,
           options: Optional[Union[VUMPSOptions, Dict[str, Any]]] = None,
           **legacy_kwargs: Any) -> UniformMPS:
-    """Single-site VUMPS ground state of the infinite TFIM at field g, bond dim chi.
+    """Single-site VUMPS ground state of an infinite chain: the TFIM at field g, or a custom
+    bulk MPO.
 
-    Two call styles, one code path::
+    Parameters
+    ----------
+    g : float
+        Transverse field of the TFIM ``H = -sum sx_i sx_{i+1} - g sum sz_i`` (Pauli
+        matrices), critical at g = 1; with a custom `mpo`, the field the energy check
+        compares against.
+    chi : int
+        Bond dimension of the uniform MPS, >= 1.
+    options : VUMPSOptions or dict, optional
+        Settings; see `VUMPSOptions` for every field, its default and its range.
+    **legacy_kwargs
+        Any field of `VUMPSOptions`, passed flat; a keyword overrides the same field of
+        `options`.
+
+    Returns
+    -------
+    UniformMPS
+        A dict whose keys are also attributes: ``e0`` (energy per site), ``S`` (von Neumann
+        entropy of a bond, natural log), ``xi`` and ``xi3`` (correlation lengths in sites from
+        the second and third transfer eigenvalues; ``xi3`` with ``xi`` allows an extrapolation
+        in chi), ``svals`` (normalised Schmidt values), ``eps`` (final tangent-space
+        gradient), ``iters``, ``xi_info`` (diagnostics of the padding check, including the
+        undeflated ``xi2_naive``), ``AL``, ``AR``, ``AC``, ``C`` (on the run's backend) and
+        ``trace`` when requested.
+
+    Notes
+    -----
+    Two call styles run the same code::
 
         gs = vumps(1.0, chi=16, n_iter=400, tol=1e-12)                  # flat
         gs = vumps(1.0, 16, VUMPSOptions(n_iter=400, tol=1e-12))        # grouped
-
-    Every keyword of the flat signature is a field of `VUMPSOptions` with the same
-    default, and a flat keyword overrides the corresponding field of an `options`
-    object passed alongside it. `tests/test_api.py` asserts the two styles give
-    bit-identical energies and bit-identical tensors.
-
-    backend: 'numpy' | 'torch-cpu' | 'torch-cuda' — every O(D^3) contraction runs there.
-    init: optional {AL,AR,C} from a smaller-χ run to ramp from (see _expand); else random.
-
-    Convergence-diagnostic knobs (defaults reproduce the original behaviour exactly):
-      env_tol      — Arnoldi fixed-point + GMRES channel tolerance in the environments.
-      local_tol    — tolerance of the H_AC / H_C Lanczos ground-state solves.
-      m_local_cap  — Krylov cap of those local solves; None -> the original min(80, 4·χ).
-                     An int uses min(m_local_cap, D·d·D − 1), so it can exceed 4·χ (the
-                     hypothesis under test: VUMPS ε cannot fall below the local-solve error,
-                     and min(80,4·χ) under-resolves H_AC as χ grows).
-      trace        — if True, record a per-iteration convergence trajectory (it, e0, eps,
-                     local H_AC eigen-residual, σ_min(C)) and return it under key "trace".
-
-    Energy-readout guard (see `EnergyReadoutError` / `_check_energy_readout`):
-      mpo          — a custom bulk MPO. The STATE is optimised against it, but `e0` is read off
-                     LOCAL expectation values, so a custom MPO must come with the matching
-                     `bond_h` (nearest-neighbour) or `triple_h` (three-site) or `e0` would be
-                     the TFIM formula for a non-TFIM Hamiltonian. That combination now RAISES.
-      on_mpo_mismatch — "raise" (default) | "ignore" (reproduce pre-guard e0 for old results).
-
-    Transfer-spectrum guard (see `_correlation_lengths`):
-      xi_on_padding — "deflate" (default) restricts the transfer operator to supp(C C†)
-                     before reading λ₂,λ₃, so ξ measures the state and not the χ-padding;
-                     "raise" turns a contaminated ξ into a TransferSpectrumPaddingError;
-                     "ignore" reproduces the pre-guard numbers (old results only).
-      xi_rank_tol  — relative singular-value cut defining the Schmidt rank (default 1e-12).
-
-    Returns dict: e0 (energy/site), S (entanglement), xi (correlation length), svals
-    (Schmidt spectrum), xi2/xi3 (transfer lengths for extrapolation), eps, iters, {AL,AR,AC,C},
-    and xi_info (the guard's diagnostics, including the pre-guard "xi2_naive"), as a
-    `UniformMPS`: the same dict, with the keys also readable as attributes."""
+    """
     # `chi` is a keyword for the drivers that call vumps(**kw) with chi in the dict
     # (older call sites). Both spellings at once was a TypeError from
     # the interpreter and stays one, rather than a silently chosen bond dimension.
@@ -833,8 +789,7 @@ def vumps(g, chi: Optional[int] = None,
 
 
 def _vumps_run(g, chi: int, o: VUMPSOptions) -> UniformMPS:
-    """The optimisation itself. Unchanged from the flat-signature version; the options are
-    unpacked into the names the body has always used, so the arithmetic is untouched."""
+    """The optimisation itself; `vumps` documents it."""
     n_iter, tol, seed, init, verbose = o.n_iter, o.tol, o.seed, o.init, o.verbose
     backend, env_tol, local_tol = o.backend, o.env_tol, o.local_tol
     m_local_cap, trace = o.m_local_cap, o.trace
@@ -842,7 +797,12 @@ def _vumps_run(g, chi: int, o: VUMPSOptions) -> UniformMPS:
     on_mpo_mismatch = o.on_mpo_mismatch
     xi_on_padding, xi_rank_tol = o.xi_on_padding, o.xi_rank_tol
 
-    # Guard FIRST: a mis-specified energy readout must cost a second, not 600 iterations.
+    if mpo is not None:
+        shape = tuple(int(n) for n in getattr(mpo, "shape", np.shape(mpo)))
+        if len(shape) != 4 or shape[2:] != (2, 2):
+            raise ValueError(f"vumps supports d = 2 (spin-1/2) only; got an MPO of shape "
+                             f"{shape} (d = {shape[2] if len(shape) == 4 else '?'})")
+    # Guard first: a mis-specified energy readout must cost a second, not 600 iterations.
     _check_energy_readout(g, mpo, bond_h, triple_h, on_mpo_mismatch)
     be = get_backend(backend)
     D, d = chi, 2
@@ -912,8 +872,7 @@ def _vumps_run(g, chi: int, o: VUMPSOptions) -> UniformMPS:
     S = float(-np.sum(p * np.log(p)))
     # C is passed so the transfer spectrum can be checked against the Schmidt rank: at
     # chi >> rank the isometric AL acts reducibly and lambda_2 belongs to the padding, not the
-    # state (see _correlation_lengths). xi_info carries the diagnostics --
-    # in particular xi_info["xi2_naive"], the pre-guard number, so old results stay reproducible.
+    # state (see _correlation_lengths). xi_info carries the diagnostics.
     xi, xi3, xi_info = _correlation_lengths(AL, D, be, C=C, rank_tol=xi_rank_tol,
                                             on_padding=xi_on_padding, return_info=True)
     out = UniformMPS(e0=e0, S=S, xi=xi, xi3=xi3, svals=sv, eps=eps, iters=it + 1,

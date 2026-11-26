@@ -34,6 +34,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import time
+import warnings
 from typing import Any, Optional, Sequence
 
 import numpy as np
@@ -51,7 +52,7 @@ from .blocks import BlockTensor, Leg, from_dense as _block_from_dense
 from .legs import fuse, split
 from .symmetric_backend import SymmetricBackend, random_symmetric_mps
 from .symmetric_tensor import SymmetricTensor, from_dense as _sym_from_dense
-from ._sparse import linalg_of, symmetry_of
+from ._sparse import linalg_of
 from ._dmrg import (
     _block_backend,
     _check_sector,
@@ -67,7 +68,7 @@ from ._dmrg import (
 
 __all__ = ["mpo_expectation", "mpo_sq_expectation", "mpo_variance", "two_site_variance",
            "mps_inner", "dmrg_excited", "DMRGExcitedOptions", "dmrg_tower", "dmrg_block",
-           "degenerate_clusters"]
+           "degenerate_clusters", "DeflationWarning"]
 
 _NP = get_backend("numpy")
 
@@ -137,15 +138,26 @@ def _close(F, R, be):
 
 
 def mps_inner(A, B, be=None):
-    """<A|B> for two MPS in (left, phys, right) order, arbitrary gauge.
+    """The inner product <A|B> of two MPSs, in any gauge.
 
-    ``be``: for dense MPSs it defaults to numpy in complex128 (kept so that dense results stay
-    as they were). Block and symmetric MPSs run on the `BlockBackend` or `SymmetricBackend`
-    around ``be`` (or ``be`` itself if it is that adaptor), by default around the dense backend
-    of their buffers: numpy in complex128, or torch on their device in their dtype. Both MPSs
-    must end on the same bond. When the last bond holds a multiplet of dimension d > 1, <A|B>
-    sums over its d states, as the DMRG environments do, so every normalised quantity is that
-    of one state of the multiplet."""
+    Parameters
+    ----------
+    A, B : sequence of tensors
+        MPSs on the same sites, rank-3 tensors ``(left, phys, right)``, both dense, both block
+        or both symmetric. Block and symmetric MPSs must end on the same bond.
+    be : backend, optional
+        Dense MPSs: default numpy in complex128. Block and symmetric MPSs run on the
+        `BlockBackend` or `SymmetricBackend` around `be` (or `be` itself if it is one), by
+        default around the dense backend of their buffers: numpy in complex128, or torch on
+        their device in their dtype.
+
+    Returns
+    -------
+    complex
+        <A|B> (A conjugated). When the last bond holds a multiplet of dimension d > 1, it sums
+        over the d states, as the DMRG environments do, so every normalised quantity is that
+        of one state of the multiplet.
+    """
     _same_kind(A, B)
     sparse = getattr(A[0], "is_block", False)
     if sparse:
@@ -171,10 +183,23 @@ def _observable_backend(mps, mpo, be):
 
 
 def mpo_expectation(mps, mpo, be=None):
-    """<psi|W|psi> / <psi|psi> for an MPS and an MPO (bra/ket the same state).
+    """The expectation value ``<psi|W|psi> / <psi|psi>`` of an MPO.
 
-    ``be`` defaults to the backend the MPS lives on (numpy arrays: numpy in complex128); block
-    and symmetric tensors as in `mps_inner`."""
+    Parameters
+    ----------
+    mps : sequence of tensors
+        The state, dense, block or symmetric; it need not be normalised.
+    mpo : sequence of tensors
+        The operator, of the same tensor type, axes ``(wl, wr, out, in)``.
+    be : backend, optional
+        Default: the backend the MPS lives on (numpy arrays: numpy in complex128); block and
+        symmetric tensors as in `mps_inner`.
+
+    Returns
+    -------
+    complex
+        The expectation value; its imaginary part is rounding for a Hermitian `mpo`.
+    """
     be = _observable_backend(mps, mpo, be)
     if getattr(mps[0], "is_block", False):
         F, R = _edges(mps, mpo, 1, be)
@@ -208,13 +233,26 @@ def mpo_sq_expectation(mps, mpo, be=None):
 
 
 def mpo_variance(mps, mpo, be=None):
-    """Energy variance <W^2> - <W>^2, clipped at zero. Returns ``(var, floor)``.
+    """The variance ``<W^2> - <W>^2`` of an MPO in a state, clipped at zero.
 
-    By the Weinstein bound some eigenvalue of W lies within sqrt(var) of <W>, so this
-    certifies convergence without a reference spectrum. It cannot detect a state that
-    converged onto an eigenvalue already found. ``floor`` = eps * max(|<W^2>|, 1) is the
-    round-off level of the difference: a ``var`` at or below it is unresolved. ``be`` as in
-    `mpo_expectation`."""
+    By the Weinstein bound some eigenvalue of W lies within ``sqrt(var)`` of <W>, so this
+    certifies convergence without a reference spectrum. It cannot detect a state that converged
+    onto an eigenvalue already found. <W^2> is contracted layer by layer
+    (`mpo_sq_expectation`), never forming W^2.
+
+    Parameters
+    ----------
+    mps, mpo, be
+        As in `mpo_expectation`.
+
+    Returns
+    -------
+    var : float
+        ``max(<W^2> - <W>^2, 0)``, in units of energy squared.
+    floor : float
+        ``eps * max(abs(<W^2>), 1)``, the rounding level of the difference: a `var` at or below
+        it is unresolved.
+    """
     be = _observable_backend(mps, mpo, be)
     e2 = float(np.real(mpo_sq_expectation(mps, mpo, be)))
     e1 = float(np.real(mpo_expectation(mps, mpo, be)))
@@ -261,8 +299,8 @@ def two_site_variance(mps, mpo, be=None):
     completions that the QR returns), which is also what one-site TDVP evolves in.
 
     Cost: one-site and two-site H_eff applications, one QR per site, and one right
-    canonicalisation, O(N chi^3 D d^2): about 8x `mpo_expectation` (numpy, N = 60, chi = 32-128,
-    D = 5). ``be`` defaults to the backend the MPS lives on. Dense MPSs only."""
+    canonicalisation, O(N chi^3 D d^2): several times the cost of `mpo_expectation`. ``be``
+    defaults to the backend the MPS lives on. Dense MPSs only."""
     if getattr(mps[0], "is_block", False) or getattr(mpo[0], "is_block", False):
         raise TypeError("two_site_variance takes a dense MPS and MPO: convert block or "
                         "symmetric ones with their to_dense_mps")
@@ -381,9 +419,66 @@ def _lifted(h, proj, starts, margin, be):
 
 @dataclasses.dataclass
 class DMRGExcitedOptions:
-    """Settings of `dmrg_excited`, with the defaults of its old flat signature. The Krylov cap
-    `eig_max_iter=None` is 100 on dense MPOs, as before, and min(block size, max(200, 4 chi)) on
-    block and symmetric ones, as in `dmrg`."""
+    """Settings of `dmrg_excited`, apart from `mpo` and `chi`. Every field can also be passed
+    to `dmrg_excited` as a keyword, with the same default.
+
+    Parameters
+    ----------
+    prev_states : sequence of MPS, default ()
+        States to deflate against, of the same tensor type as `mpo` (and, for block and
+        symmetric MPOs, in the same sector), taken at unit norm.
+    penalty : float, default 1.0
+        Weight w of ``w sum_i |psi_i><psi_i|``, in units of energy. It must exceed the spread
+        of the levels being climbed; see the module docstring.
+    n_sweeps : int, default 12
+        Maximum number of full sweeps.
+    tol : float, default 1e-11
+        Stop once the penalised energy changes by less than this between sweeps.
+    eig_tol : float, default 1e-9
+        Residual tolerance of the local eigensolver.
+    trunc : str, default 'svd'
+        As in `DMRGOptions`; block and symmetric tensors take 'svd' only.
+    seed : int, default 0
+        Seeds the random start.
+    init_mps : MPS or None, default None
+        Starting state; None draws a random one.
+    backend : str or backend, default 'auto'
+        As in `DMRGOptions`.
+    verbose : bool, default False
+        Print the energy after every sweep.
+    eig_max_iter : int or None, default None
+        Krylov cap of the local solve. None: 100 on dense MPOs, and
+        ``min(block size, max(200, 4 chi))`` on block and symmetric ones, as in `dmrg`.
+    reorth : {'full', 'none'}, default 'full'
+        Reorthogonalisation of 'lanczos'; 'periodic' raises
+        (`eigensolver.check_reorth_periodic`).
+    eig : {'lanczos-restart', 'lanczos'}, default 'lanczos-restart'
+        Local eigensolver: thick-restart Lanczos (bounded basis, always fully
+        reorthogonalised within its window), or Lanczos with an unbounded basis.
+    restart_m, restart_k : int, default 40 and 10
+        Basis size and kept Ritz vectors of 'lanczos-restart'.
+    reorth_alg : {'cgs2', 'cgs2v2', 'mgs'}, default 'cgs2'
+        Reorthogonalisation kernel of 'lanczos-restart'.
+    deflate : {'penalty', 'project'}, default 'penalty'
+        'penalty' solves ``H + penalty * sum_i |psi_i><psi_i|``. 'project' solves ``Q H Q`` in
+        each two-site block, with Q the orthogonal projector off the block representations of
+        `prev_states`: deflation is exact within the block (no leakage of order 1/penalty).
+        `penalty` then lifts the deflated span above the start's energy and is the penalty of
+        a fallback: a block with no room left outside the deflated span, or whose solution
+        keeps less than half its norm there, is solved by the penalty method instead, counted
+        in ``info["project_fallbacks"]``.
+    charge : sector label or None, default None
+        Block and symmetric MPOs: the total sector, as in `dmrg` (under SU(2), twice the total
+        spin).
+    time_budget_s : float or None, default None
+        Seconds from the call. No sweep starts that the longest sweep so far says would end
+        after it; the first sweep always runs. A run stopped this way has ``info["cut"]``.
+        NaN raises.
+    start_noise : float, default 0.0
+        If > 0, a random vector of this norm, relative to the start vector's, is added to each
+        local start vector of the first sweep. A start with no weight on a level (for instance
+        by a symmetry the tensors do not carry) cannot find it; the noise gives it some.
+    """
     prev_states: Sequence[Any] = ()
     penalty: float = 1.0
     n_sweeps: int = 12
@@ -427,71 +522,82 @@ def _sectors(V):
     return {"sectors": list(V.sectors), "degeneracies": list(V.degeneracies)}
 
 
+class DeflationWarning(RuntimeWarning):
+    """An excited-state solve returned a state that overlaps a state it was deflated against."""
+
+
+OVERLAP_WARN = 0.5      # |<psi_i|M>|^2 above which the solve has most likely refound psi_i
+
+
+def _warn_overlaps(overlaps, penalty, deflate, where, retry=""):
+    """Warn when the state found has |<psi_i|M>|^2 > OVERLAP_WARN for some previous state."""
+    worst = max(overlaps, default=0.0) ** 2
+    if worst > OVERLAP_WARN:
+        fix = ("raise `penalty` above the spread of the levels" + retry
+               + (", or use deflate='project'" if deflate == "penalty" else ""))
+        warnings.warn(
+            f"{where}: the state found has |<psi_i|psi>|^2 = {worst:.3g} > {OVERLAP_WARN} with a "
+            f"previous state, so it is most likely that state again. The penalty ({penalty:g}) "
+            f"is probably below the gap to the level sought: {fix}.",
+            DeflationWarning, stacklevel=3)
+
+
 def dmrg_excited(mpo, chi, options=None, **legacy_kwargs):
-    """Lowest eigenstate of ``H`` deflated against ``prev_states``.  Returns (E, M, info),
-    with ``M`` an `MPS` whose `center` is 0.
+    """The lowest eigenstate of an MPO orthogonal to given states, by penalised DMRG.
 
-    Settings go in a `DMRGExcitedOptions` or as flat keywords, as in `dmrg`; a flat keyword
-    overrides the field of an `options` object given alongside it.
+    Parameters
+    ----------
+    mpo : sequence of tensors
+        The Hamiltonian H, dense, block or symmetric (provisional), axes
+        ``(wl, wr, out, in)``.
+    chi : int
+        Maximum bond dimension, >= 1; multiplets on symmetric tensors.
+    options : DMRGExcitedOptions or dict, optional
+        Settings; see `DMRGExcitedOptions` for every field, its default and its range.
+    **legacy_kwargs
+        Any field of `DMRGExcitedOptions`, passed flat; a keyword overrides the same field of
+        `options`.
 
-    ``E`` is the *physical* energy <M|H|M>, with the penalty contribution removed, so it
-    is directly comparable across states.
+    Returns
+    -------
+    E : float
+        The physical energy <M|H|M>, without the penalty, so it compares across states.
+    M : MPS
+        The state, with its orthogonality centre at site 0.
+    info : dict
+        ``sweeps``; the penalised energy per sweep (``energies``) and its last value
+        (``E_penalised``); ``penalty_overlaps`` (``abs(<psi_i|M>)`` per previous state);
+        ``discarded_weight``; ``eig_time``; ``converged`` (the last sweep changed the
+        penalised energy by less than `tol`); ``cut``; ``expand`` (always 0: no subspace
+        expansion); seconds per sweep ``sweep_s`` and for the call ``wall_s``; the largest
+        bond in the units of `chi` (``max_bond``) and in dense states (``max_bond_dense``).
+        Block and symmetric runs add the last bond's ``last_bond`` (sectors and degeneracies)
+        and ``charge``, its sector (None if it holds more than one).
 
-    deflate : {"penalty", "project"}
-        "penalty" (default) solves ``H + penalty * sum |psi_i><psi_i|``. "project" solves
-        ``Q H Q`` in each two-site block, ``Q`` the orthogonal projector off the block
-        representations of ``prev_states``: deflation is exact within the block (no
-        leakage of order 1/penalty). ``penalty`` then lifts the deflated span above the
-        start's energy, and is the penalty of a fallback: a block with no room left outside
-        the deflated span, or whose solution keeps less than half its norm there, is solved
-        by the penalty method instead, counted in ``info["project_fallbacks"]``.
+    Notes
+    -----
+    Block and symmetric MPOs run as in `dmrg`: exactly one of `charge` and a block or
+    symmetric `init_mps`; `backend` names the dense backend under the tensors, or is a
+    `BlockBackend` or `SymmetricBackend`; ``trunc='svd'`` only, and no subspace expansion.
+    When the sector is a multiplet of dimension d > 1, the penalty and the overlaps are those
+    of one state of it.
 
-    eig : {"lanczos", "lanczos-restart"}
-        Local eigensolver for each two-site block, mirroring ``tnkit.dmrg``'s ``eig=``.
-        Default: "lanczos-restart" -- thick restart at identical
-        accuracy and 25-31% faster wall time. "lanczos" is the historical, unbounded-basis
-        solver; pass it to get the old behaviour exactly (bit-for-bit -- this function had
-        no solver choice before this flip, so "lanczos" reproduces every prior call site).
-        ``reorth`` applies to "lanczos" only; thick restart is always fully reorthogonalised
-        within its ``restart_m``-vector window.
-    restart_m, restart_k : int
-        Krylov window and Ritz vectors kept per restart, used only by eig="lanczos-restart".
-        Names and defaults mirror ``tnkit.dmrg.DMRGOptions``.
-    reorth_alg : {"cgs2", "cgs2v2", "mgs"}
-        Reorthogonalisation kernel inside the restart window; ignored by "lanczos".
-    backend : as in ``tnkit.dmrg`` -- 'numpy' | 'torch-*' | a '-real' variant | a Backend
-        object | 'auto'. Default 'auto': real dtype when `mpo` (and
-        `init_mps`, if given) are real, complex otherwise. Pass backend='numpy' for the
-        old complex-always default.
-    time_budget_s : seconds from the call, or None (no limit). No sweep starts that the
-        longest sweep so far says would end after it; the first sweep always runs. A run
-        stopped this way has ``info["cut"]``. NaN raises.
-    start_noise : > 0 adds a random vector of this norm, relative to the start vector's, to
-        each local start vector of the first sweep. A start can have no weight on a level
-        (for instance by a symmetry the tensors do not carry), and then cannot find it; the
-        noise gives it some. 0 (default): no noise.
-
-    Block and symmetric MPOs (provisional) run as in `dmrg`: exactly one of ``charge`` (the
-    total sector) and a block or symmetric ``init_mps``; ``backend`` names the dense backend
-    under the tensors, or is a `BlockBackend` or `SymmetricBackend`; ``trunc='svd'`` only, and
-    no subspace expansion; on symmetric tensors ``chi`` counts multiplets. ``prev_states`` are
-    MPSs of the same tensor type in the same sector (another sector raises), taken at unit
-    norm. When that sector is a multiplet of dimension d > 1, the penalty and the overlaps are
-    those of one state of it.
-
-    ``info`` reports ``sweeps``, the penalised energy per sweep (``energies``) and its last
-    value (``E_penalised``), ``penalty_overlaps`` (|<psi_i|M>| per previous state),
-    ``discarded_weight``, ``eig_time``, ``converged`` (the last sweep changed the penalised
-    energy by less than ``tol``), ``cut``, ``expand`` (always 0: no subspace expansion),
-    seconds per sweep ``sweep_s`` and for the call ``wall_s``, and the largest bond in the
-    units of ``chi`` (``max_bond``) and in dense states (``max_bond_dense``); block and
-    symmetric runs add the last bond's ``last_bond`` (sectors and degeneracies) and
-    ``charge``, its sector (None if it holds more than one).
+    A `penalty` below the gap to the level sought lets the solve return a previous state
+    again. When the state found has ``abs(<psi_i|M>)**2 > 0.5`` (`OVERLAP_WARN`) for some
+    previous state, a `DeflationWarning` (a `RuntimeWarning`) says so.
     """
     o = _options.resolve(DMRGExcitedOptions, options, legacy_kwargs, "dmrg_excited")
     tl.warn_if_deprecated(o.trunc)
-    return _dmrg_excited(mpo, chi, **{f.name: getattr(o, f.name)
-                                      for f in dataclasses.fields(o)})
+    out = _dmrg_excited(mpo, chi, **{f.name: getattr(o, f.name) for f in dataclasses.fields(o)})
+    _warn_overlaps(out[2]["penalty_overlaps"], o.penalty, o.deflate, "dmrg_excited")
+    return out
+
+
+def _quiet_excited(*args, **kw):
+    """`dmrg_excited` without its `DeflationWarning`, for callers that retry on the overlap."""
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeflationWarning)
+        return dmrg_excited(*args, **kw)
 
 
 def _dmrg_excited(mpo, chi, *, prev_states, penalty, n_sweeps, tol, eig_tol, trunc, seed,
@@ -504,11 +610,8 @@ def _dmrg_excited(mpo, chi, *, prev_states, penalty, n_sweeps, tol, eig_tol, tru
         raise ValueError(f"eig must be 'lanczos' or 'lanczos-restart', got {eig!r}")
     if deflate not in ("penalty", "project"):
         raise ValueError(f"deflate must be 'penalty' or 'project', got {deflate!r}")
-    # reorth='periodic' is refuted (see `check_reorth_periodic` in eigensolver.py). eig="lanczos"
-    # already gets this check for free every block, inside `lanczos_ground` itself (stop=
-    # "residual", its default -- this function has no eig_stop kwarg); "lanczos-restart" never
-    # even looks at `reorth`, so an explicit reorth='periodic' from the caller must still be
-    # refused up front here, once, for parity with the "lanczos" path.
+    # reorth='periodic' is refused (`check_reorth_periodic`): 'lanczos' checks it itself, and
+    # 'lanczos-restart' ignores `reorth`, so the check is made here for it.
     if eig == "lanczos-restart":
         check_reorth_periodic(reorth, "residual")
     if not start_noise >= 0:
@@ -965,8 +1068,7 @@ def dmrg_tower(mpo, chi, nlevels, penalty=1.0, seed=0, verbose=False,
     The penalty is **adaptive**.  A fixed ``w`` fails in a way that is easy to miss: once
     the tower spans more than ``w``, the penalised copy of a low state, sitting at
     ``E_0 + w``, drops below the level being searched for and DMRG returns the ground
-    state again.  Observed exactly this failure mode with ``w = 4`` on a tower of
-    spread 6.1.  So ``w`` is raised to ``3 x`` the spread found so far, and any level that
+    state again.  So ``w`` is raised to ``3 x`` the spread found so far, and any level that
     still comes back with a large overlap on a previous state is recomputed with ``w``
     quadrupled and a different random seed.
 
@@ -1013,10 +1115,10 @@ def dmrg_tower(mpo, chi, nlevels, penalty=1.0, seed=0, verbose=False,
             warm = warm_chain and deflate == "penalty" and states and attempt == 0
             init = states[-1] if warm else None
             sector = {} if charge is None or init is not None else {"charge": charge}
-            E, M, info = dmrg_excited(mpo, chi, prev_states=states, penalty=w,
-                                      seed=seed + 17 * n + 101 * attempt,
-                                      init_mps=init, verbose=False, deflate=deflate, **sector,
-                                      **kw)
+            E, M, info = _quiet_excited(mpo, chi, prev_states=states, penalty=w,
+                                        seed=seed + 17 * n + 101 * attempt,
+                                        init_mps=init, verbose=False, deflate=deflate,
+                                        **sector, **kw)
             ov = max(info["penalty_overlaps"], default=0.0)
             info["penalty"] = w
             info["attempt"] = attempt
@@ -1030,6 +1132,8 @@ def dmrg_tower(mpo, chi, nlevels, penalty=1.0, seed=0, verbose=False,
             print(f"  level {n}: E = {E:.12f}   sweeps={info['sweeps']:2d} "
                   f"max|<prev|psi>|={ov:.2e}  w={w:g}  disc={info['discarded_weight']:.2e}",
                   flush=True)
+        _warn_overlaps(info["penalty_overlaps"], info["penalty"], deflate,
+                       f"dmrg_tower level {n}", " or `max_retries`")
         states.append(_host(M))
         energies.append(E)
         infos.append(info)
@@ -1061,9 +1165,9 @@ def dmrg_tower(mpo, chi, nlevels, penalty=1.0, seed=0, verbose=False,
         for t in range(hi - n + 1):
             w, init = max(w0, _tower_penalty(energies[:n + t], penalty)), inits[t]
             for attempt in range(max_retries):
-                E, M, info = dmrg_excited(mpo, chi, prev_states=states[:n + t], penalty=w,
-                                          seed=seed + 17 * (n + t) + 9902 + 101 * attempt,
-                                          init_mps=init, verbose=False, deflate=deflate, **kw)
+                E, M, info = _quiet_excited(mpo, chi, prev_states=states[:n + t], penalty=w,
+                                            seed=seed + 17 * (n + t) + 9902 + 101 * attempt,
+                                            init_mps=init, verbose=False, deflate=deflate, **kw)
                 if max(info["penalty_overlaps"], default=0.0) < ov_tol:
                     break
                 w, init = w * 4.0, None

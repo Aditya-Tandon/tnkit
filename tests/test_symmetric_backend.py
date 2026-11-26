@@ -6,6 +6,8 @@
   * ground-state energies at full rank equal exact diagonalisation: spin-1/2 Heisenberg chains
     under SU(2), the two-flavour Schwinger model under U(1) x SU(2) in several (Q, I) sectors;
   * U(1) x U(1) through symmetric tensors gives the energy of block DMRG from the same start;
+  * one-site DMRG equals exact diagonalisation and dense one-site DMRG; one-site TDVP keeps
+    the bonds, conserves the energy and follows dense one-site TDVP;
   * two-site TDVP at full rank follows exact evolution, from I = 0 and I > 0 states, and
     conserves I^2 when truncating; DMRG restarts from its own I > 0 result;
   * subspace expansion on symmetric tensors spans what it spans on dense ones, and the DMRG
@@ -224,6 +226,17 @@ def test_two_flavour_ground_state_equals_ed(N, sector):
     assert abs(E - sector_ground(N, *sector)) < 1e-10
 
 
+def test_one_site_dmrg_equals_ed_and_dense():
+    N = 8
+    W = heisenberg_mpo(N)
+    red, _ = symmetric_mpo(W, [spin_half_site()] * N)
+    E, _, info = dmrg(red, 200, charge=0, sites=1, backend="numpy-real", **TIGHT)
+    Ed, _, _ = dmrg(W, 200, sites=1, backend="numpy-real", **TIGHT)
+    E0 = sla.eigsh(heisenberg_sparse(N), k=1, which="SA", tol=1e-14)[0][0]
+    assert info["expand"] > 0                                # bonds grow only by expansion
+    assert abs(E - E0) < 1e-10 and abs(E - Ed) < 1e-10
+
+
 def test_u1xu1_equals_block_dmrg_at_the_same_chi():
     N, chi = 6, 16
     sym = ProductSymmetry((U1(), U1()))
@@ -277,6 +290,25 @@ def test_tdvp_at_full_rank_follows_exact_evolution():
     assert all(m.sym == ProductSymmetry((U1(), SU2())) for m in out)
 
 
+def test_one_site_tdvp_conserves_energy_and_equals_dense():
+    from tnkit.tdvp import tdvp1_evolve
+    N, dt, steps = 6, 0.05, 20
+    _, (r0, _) = two_flavour(N)
+    W1, (r1, _) = two_flavour(N, mu=-0.4)
+    sites = site_spaces_2f(N)
+    _, psi, _ = dmrg(r0, 3, charge=(0, 0), backend="numpy-real", n_sweeps=6)
+    out, _ = tdvp1_evolve(list(psi), r1, dt, steps,
+                          backend=SymmetricBackend(get_backend("numpy")))
+    assert [m.codomain[2] for m in out] == [m.codomain[2] for m in psi]   # bonds kept
+    assert abs(mpo_expectation(out, r1) - mpo_expectation(list(psi), r1)) < 1e-10
+    dense = [np.asarray(t).astype(complex) for t in to_dense_mps(psi, sites)]
+    ref, _ = tdvp1_evolve(dense, [w.astype(complex) for w in W1], dt, steps, backend="numpy")
+    v, w = state_vector(out, sites)[:, 0], np.ones((1, 1))
+    for m in ref:
+        w = np.einsum("xa,asb->xsb", w, np.asarray(m)).reshape(-1, m.shape[2])
+    assert 1 - abs(np.vdot(w[:, 0], v)) ** 2 / (np.vdot(v, v).real * np.vdot(w, w).real) < 1e-12
+
+
 def test_truncated_tdvp_conserves_isospin():
     infid, i2, out = _quench(6, 4, 20)
     assert infid > 1e-8                                      # the cap acts
@@ -299,6 +331,36 @@ def test_torch_cpu_matches_numpy():
     assert o2[0].be.is_torch
     v1, v2 = state_vector(o1, sites), state_vector(o2, sites)
     assert np.abs(v1 - v2).max() < 1e-12
+
+
+def test_observables_without_a_backend_on_an_indexed_cpu_device():
+    """A backend named "cpu:0" and the one rebuilt from its tensors' device ("cpu") mix."""
+    torch = pytest.importorskip("torch")
+    from tnkit.backend import TorchBackend
+    N = 6
+    red, _ = symmetric_mpo(heisenberg_mpo(N), [spin_half_site()] * N)
+    E, gs, _ = dmrg(red, 16, charge=0, backend=TorchBackend("cpu:0", torch.float64), **TIGHT)
+    assert gs[0].be.device == torch.device("cpu")
+    assert abs(mps_inner(gs, gs) - 1) < 1e-12
+    assert abs(mpo_expectation(gs, red) - E) < 1e-10
+    assert mpo_variance(gs, red)[0] < 1e-8
+
+
+def test_one_state_of_a_dense_multiplet_as_documented():
+    """The snippet of `to_dense_mps`: index 0 of the last bond, scaled by sqrt(2S + 1), is the
+    normalised state with S^z = S."""
+    from tnkit.models import SZ
+    from tnkit.observables import local_expectations
+    N = 6
+    W, sites = heisenberg_mpo(N), [spin_half_site()] * N
+    red, _ = symmetric_mpo(W, sites)
+    for two_s in (2, 4):
+        E, gs, _ = dmrg(red, 32, charge=two_s, backend="numpy-real", **TIGHT)
+        d = to_dense_mps(gs, sites)
+        d[-1] = d[-1][..., :1] * d[-1].shape[-1] ** 0.5
+        assert abs(mps_inner(d, d) - 1) < 1e-12
+        assert abs(local_expectations(d, SZ / 2).sum() - two_s / 2) < 1e-10
+        assert abs(mpo_expectation(d, W) - E) < 1e-10
 
 
 def test_adaptor_refuses_dense_mixing():

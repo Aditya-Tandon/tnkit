@@ -1,11 +1,9 @@
-"""CUDA-Graph capture with IDENTICAL ARITHMETIC: overshoot-and-truncate.
+"""CUDA-graph capture of the one-site TDVP step with the eager arithmetic: overshoot and
+truncate.
 
-WHY THIS EXISTS, AND WHY `cudagraph.py` IS NOT ENOUGH.
-The earlier fixed-schedule capture in `cudagraph.py` captured the 1TDVP site-step and measured
-4.83x. A follow-up production run on that path was then REJECTED: not
-because replay is unfaithful (it is bit-identical to its own eager twin, 0.000e+00) but
-because capture, as implemented there, REQUIRED a different solver. `lanczos_expm_fixed`
-is not `lanczos_expm` with the branch removed -- it is a different algorithm:
+The fixed-schedule capture of `cudagraph.py` needs a different solver: `lanczos_expm_fixed`
+is not `lanczos_expm` without its branch, but a different sequence of floating-point
+operations:
 
     quantity            eager `lanczos_expm`            captured `lanczos_expm_fixed`
     ----------------    ---------------------------     -----------------------------
@@ -15,57 +13,42 @@ is not `lanczos_expm` with the branch removed -- it is a different algorithm:
     exponential         scipy Pade on the host           Taylor scaling-and-squaring, device
     final combination   sequential  out += c_j V_j       one batched  c @ V
 
-Every one of those five rows is a different sequence of floating-point operations. Their
-combined effect is a ~1e-11 perturbation per step -- and the TDVP flow's measured
-Lyapunov exponent is lambda ~ 0.29/time, so 1e-11 becomes 1e-3 by t=204. The separation
-crosses the 1e-6 physics requirement at t* ~ 45. THE PERTURBATION, NOT THE GRAPH, IS THE
-DEFECT: only a BIT-IDENTICAL instrument can be substituted into a production run.
+Together these change each step at about the 1e-11 level, and TDVP dynamics can amplify a
+perturbation exponentially in time (chaotic flows), so the two runs drift apart. This module
+captures the eager arithmetic itself, so a graphed run reproduces the eager run bit for bit.
 
-THE DESIGN THAT SURVIVES: OVERSHOOT AND TRUNCATE.
-Lanczos is a PREFIX algorithm -- iteration j reads only iterations < j. Full-reorthogonalised
-MGS preserves this (the reorth pass at step k runs over V[0..k], which is already fixed).
-So: capture a graph that always runs `m_max` iterations of EAGER'S OWN LOOP, then apply
-eager's stopping rule AFTER replay, on the host, from the residual scalars the graph already
-computed, and form the answer from the leading `m_eff` block with EAGER'S OWN CODE. The
-first m_eff Krylov vectors are then not "close to" eager's -- they are the same doubles,
-because they are the output of the same kernels in the same order on the same inputs.
+Overshoot and truncate. Lanczos is a prefix algorithm: iteration j reads only iterations < j,
+and full reorthogonalisation by MGS keeps this (the pass at step k runs over V[0..k], already
+fixed). So a graph always runs `m_max` iterations of the eager loop; the eager stopping rule
+is then applied on the host to the residual scalars the graph computed, and the answer is
+formed from the leading `m_eff` block with the eager code. The first m_eff Krylov vectors are
+the same doubles as eager's: the same kernels in the same order on the same inputs.
 
-WHAT MAKES THE TRANSCRIPTION LEGITIMATE. `_lanczos_prefix_device` below is
-`eigensolver.lanczos_expm` with exactly two edits, and no others:
+`_lanczos_prefix_device` is `eigensolver.lanczos_expm` with exactly two edits:
 
-  1. every `ops.to_scalar(...)` is DELETED. `to_scalar` is `.item()`, a device->host read,
-     which is the one thing a capture cannot contain. What it returns is the same IEEE double
-     the 0-d device tensor already holds, so `w - alpha_host * V[k]` and
-     `w - alpha_device * V[k]` are the same multiply-add on the same operands.
-  2. the two divisions by a Lanczos norm are wrapped in `ops.guard_denom` (= clamp(x, 1e-200)),
-     because eager avoids 0/0 with `if beta < tol: break` -- a host branch. For any beta above
-     1e-200 the clamp is the identity and the division is unchanged; below it, eager would have
-     stopped and the vector is discarded by the truncation anyway.
+  1. every `ops.to_scalar(...)` is removed. `to_scalar` is `.item()`, a device-to-host read,
+     which a capture cannot contain. It returns the same IEEE double the 0-d device tensor
+     holds, so `w - alpha_host * V[k]` and `w - alpha_device * V[k]` are the same multiply-add.
+  2. the two divisions by a Lanczos norm are wrapped in `ops.guard_denom` (clamp at 1e-200),
+     because eager avoids 0/0 with `if beta < tol: break`, a host branch. Above 1e-200 the
+     clamp is the identity; below it, eager would have stopped and the vector is discarded by
+     the truncation anyway.
 
-Everything else -- the operand order, the `- beta*v_prev` three-term recurrence, the explicit
-alpha subtraction FOLLOWED BY a full MGS pass over the whole basis (which therefore projects
-against V[k] twice, as eager does), the normalisation -- is copied verbatim.
+Everything else (operand order, the `- beta*v_prev` recurrence, the alpha subtraction followed
+by a full MGS pass over the whole basis, which projects against V[k] twice as eager does, the
+normalisation) is the eager code.
 
-WHAT IS DELIBERATELY *NOT* MOVED ON-DEVICE. The small-matrix exponential stays on the host,
-in `scipy.linalg.expm`, called on the same m_eff x m_eff float64 tridiagonal eager builds.
-`torch.matrix_exp` is not capturable anyway, but that is not the reason: a device exponential
-ROUNDS DIFFERENTLY, and measurement showed that a differently-rounded anything is a seed for
-e^{lambda t}. The launch saving being bought here is in the Krylov loop, which is where the
-~602 dispatches per site-step actually are; the exponential is one 8x8 call.
+The small exponential stays on the host, in `scipy.linalg.expm`, on the same m_eff x m_eff
+float64 tridiagonal eager builds: a device exponential rounds differently. The launches saved
+are in the Krylov loop; the exponential is one small call.
 
-THE OVERSHOOT IS NOW ALMOST FREE, AND THAT IS THE WHOLE TRADE. Eagerly, an over-served
-Krylov iteration costs a DISPATCH (~7 us of gap), which is why an earlier attempt at a frozen
-schedule was rejected for measuring 0.92x (a slowdown). Inside a graph the dispatch is paid once
-for the whole recorded sequence, so an over-served iteration costs only its execution time.
-`m_max` is chosen from the MEASURED demand distribution (mean 6.87 / max 8 at sigma=10;
-mean 6.07 / max 7 at sigma=30) plus margin, and the cost of that margin is reported as
-`overshoot` in the stats rather than assumed small.
+Inside a graph an extra Krylov iteration costs only its execution time, not a dispatch, so
+running m_max iterations is cheap. `m_max` should sit a little above the Krylov dimensions the
+adaptive solver needs; the cost of the margin is reported as `overshoot` in the stats.
 
-THE ESCAPE HATCH IS EXACT, NOT APPROXIMATE. If the host stopping rule concludes that eager
-would have needed MORE than m_max iterations, the graph's prefix is insufficient and the
-site-step is re-run entirely on the eager path. Nothing is truncated early and nothing is
-approximated; the step simply costs eager's price. `stats['short']` counts it, and a nonzero
-count is a signal to raise m_max, never something to tolerate silently.
+If the host stopping rule finds that eager would have needed more than m_max iterations, the
+site step is re-run entirely on the eager path: nothing is truncated early or approximated.
+`stats['short']` counts it; a nonzero count means m_max should be raised.
 """
 from __future__ import annotations
 
@@ -120,22 +103,13 @@ def _lanczos_prefix_device_cgs2(matvec, v, ops, m_max, Vb):
     buffer `Vb` (m_max, n) instead of allocating it locally, so the basis survives past this
     capture and a later graph can read it directly.
 
-    NOT BIT-IDENTICAL TO EAGER. Where `_lanczos_prefix_device` reproduces `lanczos_expm`'s
-    sequential MGS reorthogonalisation operation-for-operation, this reorthogonalises the
-    live basis in two BATCHED matmul passes (CGS2) -- the same algorithm
-    `cudagraph.py`/`lanczos_expm_fixed` already use, and the reduction order therefore differs
-    from eager's at the level measured for the fixed-schedule graph (median 1.2e-14, max
-    4.0e-14 on the exponential alone; ~1e-11 relative on a full site-step). What this class
-    keeps from the prefix graph that the fixed-schedule graph did not have is the ADAPTIVE
-    part: the Krylov dimension is still eager's own, replayed from the same scalars this loop
-    reports -- only the reorthogonalisation ARITHMETIC changes; the stopping rule itself
-    (`select_prefix`) is unchanged CODE, but it is fed THIS loop's own, differently-rounded
-    alphas/betas, so its decision is not provably identical to eager's right at a `tol`
-    decision boundary -- see `select_prefix`'s docstring for what is and isn't guaranteed
-    there. Measured on an H100 MIG slice: this
-    reorth option cuts the graphed site-step from 6.86 to 4.45 ms at chi=48 (m_max 12 -> 10),
-    and cgs2's alphas/betas deviate from mgs's by ~3e-15 relative, worst case, over 80
-    real-TDVP-block comparisons.
+    Not bit-identical to eager. Where `_lanczos_prefix_device` reproduces the sequential MGS
+    of `lanczos_expm` operation for operation, this reorthogonalises the live basis in two
+    batched matmul passes (CGS2), as `lanczos_expm_fixed` does, so the reduction order and the
+    rounding differ from eager's (alphas and betas agree to about 1e-15 relative). The Krylov
+    dimension is still chosen by the eager stopping rule, replayed from these scalars; since
+    they are rounded differently, the decision can differ from eager's right at a `tol`
+    boundary (see `select_prefix`). It needs O(m_max) kernels instead of O(m_max^2).
     """
     n = 1
     for s in v.shape:
@@ -181,20 +155,11 @@ def select_prefix(scal_host, tau, m_max, tol=1e-12, adaptive=True, est_ref_j=2,
     `tol`, built from the same float64 alphas/betas, exponentiated by the same
     `scipy.linalg.expm`. The only thing it does NOT do is generate the basis -- the graph did.
 
-    THE GUARANTEE IS ON THE CODE PATH, NOT ON EVERY OUTPUT. For `reorth='mgs'` the
-    alphas/betas fed in are bit-identical to eager's, so this function reproduces eager's
-    exact `m_eff` decision, always. For `reorth='cgs2'` the alphas/betas come from a
-    different reduction order (`_lanczos_prefix_device_cgs2`) and differ from eager's true
-    values at the ~1e-15 relative level everywhere -- so on most inputs the `est < tol`
-    comparison lands nowhere near `tol` and the decision is unaffected, but for an input
-    whose true `est` sits within that same ~1e-15 relative band of `tol`, `cgs2` can pick an
-    `m_eff` one Krylov dimension off from eager's true answer (see the boundary-case test in
-    `tests/test_prefix_cgs2_identity.py`, which constructs one such input and confirms the
-    effect is bounded to exactly that one dimension, and does not occur away from a
-    boundary). This is the same knob-name-collision as
-    `eigensolver.lanczos_expm_fixed`'s unrelated `reorth="cgs2"` default (a different,
-    `fast_expm`-only mechanism) -- unrelated code, same keyword, opposite default; that
-    default is untouched by this module.
+    The guarantee is on the code path. For `reorth='mgs'` the alphas and betas are eager's
+    bit for bit, so this reproduces eager's `m_eff` exactly. For `reorth='cgs2'` they differ
+    from eager's at about 1e-15 relative, so on an input whose estimate lies within that band
+    of `tol` the chosen `m_eff` can be one Krylov dimension off eager's (and only then). This
+    `reorth` is unrelated to the `reorth="cgs2"` default of `eigensolver.lanczos_expm_fixed`.
     """
     alphas_all = scal_host[:m_max]
     betas_all = scal_host[m_max:2 * m_max]
@@ -257,10 +222,8 @@ def _combine_eager(V, c, ops, shape):
     """`out = sum_j c_j V_j` in EAGER'S OWN ORDER: a sequential accumulation over python
     complex coefficients, not a batched `c @ V`.
 
-    This is the fifth of the five rows in the module docstring's table and it is not
-    cosmetic: a batched matmul reduces over j in whatever order cuBLAS chooses, and
-    measurement showed that merely rewriting a contraction as `einsum` instead of `matmul`
-    seeds the same e^{lambda t} amplification as a change of algorithm.
+    This is the last row of the table in the module docstring: a batched matmul reduces over
+    j in an order cuBLAS chooses, which rounds differently.
     """
     out = ops.zeros_like(V[0])
     for coeff, vj in zip(c, V):
@@ -273,12 +236,10 @@ def lanczos_expm_prefix(matvec, v, tau, ops, m_max, tol=1e-12, adaptive=True,
     """Overshoot-and-truncate WITHOUT a graph: run the fixed-length device loop, select the
     prefix on the host, combine eagerly.
 
-    This is the arithmetic contract on its own, separated from capture on purpose. It runs on
-    ANY backend including numpy and torch-cpu, so the claim "the retained arithmetic is
-    eager's arithmetic" is testable with no GPU at all (tests/test_prefix_identity.py), and
-    the GPU-side test then only has to establish the thing already established twice on the
-    earlier capture paths -- that replaying a captured graph reproduces its eager twin
-    bit-for-bit.
+    The arithmetic of the graphed step without the capture. It runs on any backend, numpy and
+    torch-cpu included, so that it matches eager can be tested without a GPU
+    (tests/test_prefix_identity.py); on a GPU it remains to show that replaying a captured
+    graph reproduces its eager run bit for bit.
 
     Returns exactly what `lanczos_expm` returns. If the prefix is too short it FALLS BACK to
     `lanczos_expm` itself rather than returning an approximation.
@@ -310,9 +271,9 @@ def lanczos_expm_prefix_cgs2(matvec, v, tau, ops, m_max, tol=1e-12, adaptive=Tru
     `_lanczos_prefix_device_cgs2` (batched reorthogonalisation) and the combination is the
     batched `c @ V` instead of `_combine_eager`'s sequential sum.
 
-    Runs on any backend, so the SIZE of the deviation from eager -- not just its existence --
-    is testable with no GPU (`tests/test_prefix_cgs2_identity.py`). This is the arithmetic
-    `PrefixSiteStepGraph(reorth='cgs2')` captures; see its docstring for what changes and why.
+    Runs on any backend, so the size of the deviation from eager can be tested without a GPU
+    (`tests/test_prefix_cgs2_identity.py`). It is the arithmetic
+    `PrefixSiteStepGraph(reorth='cgs2')` captures.
     """
     from .eigensolver import lanczos_expm
     shape = v.shape
@@ -357,31 +318,23 @@ class PrefixSiteStepGraph:
     it happens. What crosses that cut is only the COEFFICIENT vector: G1/G2 write their
     m_max Krylov vectors into a static (m_max, n) buffer, the host computes eager's
     coefficients for the first m_eff of them, pads the rest with EXACT zeros, and GC1/GC2
-    replay the reduction over the FULL m_max terms every time -- moving what used to be up
-    to 2*m_max python-dispatched tensor ops (profiling done for both graph designs attributed a flat
-    ~22us to EVERY dispatch, captured or not) into one graph replay.
+    replay the reduction over all m_max terms every time, which turns up to 2 m_max Python
+    dispatches into one graph replay.
 
     `reorth` selects the Krylov loop AND the combine reduction together, as a pair:
 
-      'mgs'   `_lanczos_prefix_device` (eager's own sequential modified-Gram-Schmidt) plus
-              a SEQUENTIAL zero-padded accumulation in GC1/GC2. BIT-IDENTICAL to eager: 0.0
-              times any finite Krylov vector is exact zero and out+0 is the identity, so the
-              padding terms are silent and the real ones are added in eager's own order.
-              O(m_max^2) reorthogonalisation kernels, all inside the graph -- the floor that
-              profiling of the fixed-schedule graph identified: capture removes their
-              LAUNCH cost, not their count.
-      'cgs2'  `_lanczos_prefix_device_cgs2` (two batched matmul passes, transported from
-              `eigensolver.lanczos_expm_fixed`/`cudagraph.py`) plus a BATCHED matmul combine
-              `c @ V`. O(m_max) kernels instead of O(m_max^2) -- this is the dispatch-cost
-              fix -- but NOT bit-identical: CGS2's reduction order differs from MGS's at the
-              level already measured for the fixed-schedule graph (median 1.2e-14 on the
-              exponential, ~1e-11 relative on a full site-step). Measured on this design
-              specifically, on an H100 MIG slice: worst case 3.0e-15 relative over 80
-              real-TDVP-block comparisons, alongside a graphed site-step cost of 6.86 -> 4.45 ms
-              at chi=48 (m_max 12 -> 10) -- see `tests/test_prefix_cgs2_identity.py` for the
-              CPU-side bound. Also note: `select_prefix`'s stopping decision runs on THESE
-              alphas/betas, not eager's -- see its docstring for the (narrower) guarantee that
-              implies near a `tol` boundary.
+      'mgs'   `_lanczos_prefix_device` (eager's sequential modified Gram-Schmidt) plus a
+              sequential zero-padded accumulation in GC1/GC2. Bit-identical to eager: 0.0 times
+              a finite Krylov vector is an exact zero and out + 0 is the identity, so the
+              padding terms are silent and the real ones are added in eager's order. O(m_max^2)
+              reorthogonalisation kernels, all inside the graph: capture removes their launch
+              cost, not their number.
+      'cgs2'  `_lanczos_prefix_device_cgs2` (two batched matmul passes, as in
+              `eigensolver.lanczos_expm_fixed`) plus a batched combine `c @ V`. O(m_max)
+              kernels, but not bit-identical: the reduction order differs from MGS's, at about
+              1e-15 relative in the Lanczos scalars (`tests/test_prefix_cgs2_identity.py`).
+              `select_prefix` decides on these scalars; see its docstring for the guarantee
+              near a `tol` boundary.
 
     STATIC BUFFERS, as in `cudagraph.SiteStepGraph`: capture fixes addresses as well as
     shapes, so each call copies its inputs into the buffers the graphs were recorded
@@ -548,19 +501,17 @@ class PrefixSiteStepGraphCache(GraphFaults):
     """Lazily captures one `PrefixSiteStepGraph` per (signature, direction) and tallies use.
 
     Mirrors `cudagraph.SiteStepGraphCache` -- one shared memory pool, a capacity cap, and a
-    replayed/eager tally that is REPORTED with every timing number in this direction. The cap
-    default is 1024, set by hand after discovering that a production run has 296 signatures
-    against the 100 measured earlier and the 256 defaulted to at the time.
+    replayed/eager tally to report with any timing. The cap default, 1024 graphs, is several
+    times the number of distinct shapes a long run meets.
 
     `stats` additionally carries the quantity that is specific to overshoot-and-truncate:
     `m_eff_hist` (how deep eager's rule actually went, per solve) and `short` (how often it
-    wanted deeper than m_max and the step had to be re-run eagerly). Their ratio to m_max IS
-    the overshoot cost, and it is measured rather than assumed.
+    wanted deeper than m_max and the step was re-run eagerly). Their ratio to m_max is the
+    overshoot cost.
 
-    `reorth`: 'mgs' (default, unchanged from before this fix) reproduces eager bit-for-bit at
-    the O(m_max^2)-kernel cost first measured for this graph; every existing caller that does not
-    pass `reorth` keeps that guarantee. 'cgs2' (opt-in) is the dispatch-cost fix -- batched
-    reorthogonalisation and combine, NOT bit-identical to eager (see `PrefixSiteStepGraph`)
+    `reorth`: 'mgs' (default) reproduces eager bit for bit at O(m_max^2) kernels per solve.
+    'cgs2' (opt-in) needs fewer kernels: batched reorthogonalisation and combine, not
+    bit-identical
     -- pass it explicitly to opt in.
 
     Capture and replay failures fall back to eager; see `cudagraph.GraphFaults`.

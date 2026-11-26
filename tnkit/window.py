@@ -6,20 +6,18 @@ the background instead of reflecting off a hard edge.
 
 WHY
 ---
-Measurement of the exact free-fermion reference found the light cone (v_max = 2 for the TFIM at
-g=1) and the finite-size revival t_rev = N/v_max. Every finite benchmark since has had to buy
-sites purely as distance from the boundary -- one such run used N=48
-to push the revival to t=24 for a t<=10 window. Here the window covers only the region that is
-actually nonuniform.
+Excitations spread at most at the Lieb-Robinson speed (v_max = 2 for the TFIM at g = 1), and a
+finite chain of N sites shows a revival at about t_rev = N / v_max, so a finite chain must be
+long enough to keep its edges away from the dynamics. Here the window covers only the region
+that is actually nonuniform.
 
 WHAT THE BACKGROUND MUST BE
 ---------------------------
-The construction is only valid when the background is STATIONARY, i.e. an eigenstate of the SAME
-Hamiltonian the window evolves under. So this handles a LOCAL perturbation on a ground state --
-not a global quench, where the background itself would evolve and a fixed boundary environment
-would be simply wrong. That is why the thesis's spin-flip protocol does not apply here:
-(x)|+> is not an eigenstate of H(g>0), so it is a global quench, not a local perturbation on a
-stationary background.
+The construction is valid only when the background is stationary, an eigenstate of the same
+Hamiltonian the window evolves under. So it handles a local perturbation on a ground state,
+not a global quench, where the background itself would evolve and a fixed boundary
+environment would be wrong. A product state such as (x)|+> is not an eigenstate of H(g > 0),
+so starting from it is a global quench.
 """
 from __future__ import annotations
 
@@ -43,21 +41,18 @@ def build_window(g, chi, n_left, n_right, backend="numpy", vumps_iter=400, vumps
     left/right halves and stay FIXED for the whole evolution -- that is what makes the background
     absorbing rather than reflecting.
 
-    `bond_h`/`triple_h` are forwarded to `vumps` when it has to solve the background here. A
-    non-TFIM `mpo` without one of them now raises `EnergyReadoutError` rather than returning a
-    TFIM e0 for a mixed-field chain -- see tnkit/vumps.py. Callers that already hold a converged
-    `gs` are unaffected (no VUMPS call is made).
+    `bond_h`/`triple_h` are forwarded to `vumps` when it solves the background here; a non-TFIM
+    `mpo` without one of them raises `EnergyReadoutError` (see `vumps`). A converged `gs` passed
+    in is used as it is.
     """
     be = get_backend(backend)
     if gs is None:
         gs = vumps(g, chi, n_iter=vumps_iter, tol=vumps_tol, backend=backend, mpo=mpo,
                    bond_h=bond_h, triple_h=triple_h)
     AL, AR, C = gs["AL"], gs["AR"], gs["C"]
-    # The old signature hardwired the h = 0 TFIM MPO here, so every mixed-field caller
-    # got boundary environments FL/FR built from a
-    # DIFFERENT Hamiltonian than the bulk it then evolved under. The background is only absorbing
-    # -- indeed only stationary -- if the environments solve the same operator, so at h != 0 the
-    # window edges were being driven by a mismatched boundary term. Pass `mpo` and they match.
+    # The boundary environments FL/FR must solve the same operator the window evolves under, or
+    # the background is not stationary and the edges are driven by a mismatched boundary term:
+    # pass `mpo` for anything but the h = 0 TFIM.
     W = be.array(tfim_bulk_mpo(g) if mpo is None else mpo)
 
     FL, _ = _left_environment(AL, C, W, be, env_tol=env_tol)
@@ -138,7 +133,7 @@ def window_neighbor_correlations(window, opA, opB):
     (the semi-infinite halves are built from left-/right-canonical AL/AR, so they contract to the
     identity for norm purposes). The Lenv/Renv machinery below is `window_expectations`' verbatim.
 
-    Validated against `neighbor_correlations` on a bond-1 open MPS, where the two closures
+    It agrees with `neighbor_correlations` on a bond-1 open MPS, where the two closures
     coincide.
     """
     be, M = _on_backend(window)

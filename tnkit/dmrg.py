@@ -4,7 +4,7 @@
 implementation defines or re-imports. What changed is `import tnkit.dmrg as X`: the
 package now exports the FUNCTION `dmrg` at the top level, so that statement binds the
 function rather than this module (CPython resolves `import a.b as c` by `getattr` on
-`a`). Both objects carry the mutable registries an A/B driver reaches for, and they are
+`a`). Both objects carry the mutable registries (`_EIGSOLVERS`, `_HOOKS`), and they are
 the same objects on both -- see `tnkit/_shim.py` for why that distinction is the whole
 design, and `tests/test_api.py` for the tests that pin it.
 """

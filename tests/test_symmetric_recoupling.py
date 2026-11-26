@@ -729,7 +729,7 @@ def test_real_and_single_precision_permutes(name, backend):
             try:
                 got = permute(u, p1, p2)
             except TypeError as e:
-                assert "complex recoupling matrix" in str(e) and label != "complex64"
+                assert "matrix needs complex data" in str(e) and label != "complex64"
                 continue
             out = got.data if tb is None else got.data.numpy()
             assert out.dtype == np.dtype(dtype), (label, p1, p2)
@@ -941,3 +941,31 @@ def test_cache_limits_from_the_environment():
     for i, name in enumerate(names):
         assert out[name] == [(10 + i) * 2 ** 20, "env", None], name
     assert out["recent_layouts"] == [5 * 2 ** 20, "env", 7]
+
+
+def test_malformed_cache_limits_warn_and_keep_the_defaults():
+    env = {k: v for k, v in os.environ.items() if not k.startswith("TNKIT_SYMMETRIC_")}
+    env.update(TNKIT_SYMMETRIC_INDEX_CACHE_MB="1G", TNKIT_SYMMETRIC_STRUCTURE_CACHE_MB="-1",
+               TNKIT_SYMMETRIC_RECENT_LAYOUTS="1.5", TNKIT_SYMMETRIC_PERMUTE_CACHE_MB="nan",
+               TNKIT_BLOCK_CACHE_MB="many", TNKIT_BLOCK_LABEL_CACHE_MB="-2")
+    code = ("import json, warnings\n"
+            "with warnings.catch_warnings(record=True) as w:\n"
+            "    warnings.simplefilter('always')\n"
+            "    import tnkit\n"
+            "    from tnkit import symmetric_tensor as st, blocks\n"
+            "i = st.cache_info()\n"
+            "b = [[c.max_bytes, c.source] for c in (blocks._INDEX_CACHE, blocks._LABEL_CACHE)]\n"
+            "print(json.dumps([sorted(str(x.message).split('=')[0] for x in w), "
+            "{k: [i[k]['max_bytes'], i[k]['limit_source'], i[k].get('max_entries')] "
+            "for k in ('indices', 'structure', 'permutes', 'recent_layouts')}, b]))")
+    warned, out, block = json.loads(subprocess.run(
+        [sys.executable, "-c", code], env=env, capture_output=True, text=True,
+        check=True).stdout)
+    assert warned == ["TNKIT_BLOCK_CACHE_MB", "TNKIT_BLOCK_LABEL_CACHE_MB"] + [
+        f"TNKIT_SYMMETRIC_{n}" for n in
+        ("INDEX_CACHE_MB", "PERMUTE_CACHE_MB", "RECENT_LAYOUTS", "STRUCTURE_CACHE_MB")]
+    assert block == [[4096 * 2 ** 20, "default-host"], [512 * 2 ** 20, "default-host"]]
+    assert out == {"indices": [1024 * 2 ** 20, "default", None],
+                   "structure": [512 * 2 ** 20, "default", None],
+                   "permutes": [1024 * 2 ** 20, "default", None],
+                   "recent_layouts": [256 * 2 ** 20, "default", 32768]}

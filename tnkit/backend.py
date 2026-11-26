@@ -1,12 +1,12 @@
-"""Backend adaptor so the same MPS/DMRG code runs on numpy or torch (CPU, CUDA,
-or Apple MPS). The eigensolver needs only vdot/norm/zeros_like; the DMRG kernel and
-truncations additionally need einsum/svd/qr/eigh/diag. Each backend implements the
-same small interface, so `dmrg(..., backend="torch-cuda")` runs unchanged on GPU.
+"""Backends, so the same MPS code runs on numpy or torch (CPU, CUDA or Apple MPS).
 
-Design: production target is NVIDIA, where torch gives native cuSOLVER svd/qr/eigh
-in double precision. Apple MPS is single precision and lacks native svd/qr/eigh
-(they fall back to CPU); CUDA has all of them. Numpy stays the default (full
-back-compat for the CPU experiments).
+The eigensolvers need only vdot, norm and zeros_like; the DMRG and TDVP kernels and the
+truncations also need einsum, svd, qr, eigh and diag. Each backend implements this small
+interface, so ``dmrg(..., backend="torch-cuda")`` runs unchanged on a GPU.
+
+On NVIDIA GPUs torch gives native cuSOLVER svd, qr and eigh in double precision. Apple MPS is
+single precision and lacks native svd, qr and eigh (they fall back to the CPU). Numpy is the
+default.
 """
 from __future__ import annotations
 import os
@@ -171,18 +171,14 @@ def _negligible_imag(a, tol=1e-12):
 
 
 def is_real_problem(*tensor_groups, tol=1e-12):
-    """True when every tensor in the given groups (an MPO, an initial MPS, ...) is real to
-    `_negligible_imag`'s tolerance -- the SAME rule the real backend's runtime guard enforces
-    on every array it is handed. `None` groups are skipped, so callers can pass an optional
-    ``init_mps=None`` straight through.
+    """True when every tensor in the given groups (an MPO, an initial MPS, ...) is real to the
+    tolerance of `_negligible_imag`, the rule the real backends apply to every array they are
+    handed. `None` groups are skipped, so an optional ``init_mps=None`` can be passed through.
 
-    This is what resolves ``backend='auto'`` in the statics front doors (``dmrg``,
-    ``dmrg_excited``): pick the real backend when the problem is real, the complex backend
-    otherwise -- so the production default never silently drops physics for a genuinely
-    complex model, and never hard-fails a real one. If this check is ever WRONG about a
-    tensor supplied later (e.g. a complex `init_mps` passed after this call inspected only
-    the MPO), the same runtime guard that this function reuses will catch it, loudly, the
-    moment that tensor reaches ``be.array()`` -- never silently.
+    It resolves ``backend='auto'`` in `dmrg` and `dmrg_excited`: the real backend when the
+    problem is real, the complex one otherwise, so a complex model is never truncated to its
+    real part and a real one never fails. A complex tensor supplied later (an `init_mps` this
+    check did not see) is caught by the same rule when it reaches ``be.array()``.
     """
     for group in tensor_groups:
         if group is None:
@@ -194,23 +190,34 @@ def is_real_problem(*tensor_groups, tol=1e-12):
 
 
 def get_backend(spec="numpy", *, mpo=None, init_mps=None, real_tol=1e-12):
-    """spec in {'numpy', 'torch-cpu', 'torch-cuda', 'torch-mps'}, a Backend, or 'auto'.
+    """A backend from its name.
 
-    A ``-real`` suffix ('numpy-real', 'torch-cuda-real') selects the REAL dtype (float64).
-    The DMRG statics path is real-safe -- the TFIM MPO is real, the ground state of a
-    real-symmetric H can be chosen real, and every complex literal in dmrg/linalg is an
-    arbitrary seed rather than physics. Real is 2x the memory and 2-4x the dense flops.
-    Dynamics (tdvp/tebd) and the non-Hermitian transfer spectrum (krylov/vumps) must keep a
-    complex backend; a real ground state promotes to complex with one astype at the start of
-    time evolution.
+    Parameters
+    ----------
+    spec : str or backend, default 'numpy'
+        'numpy', 'torch-cpu', 'torch-cuda' or 'torch-mps', each optionally followed by
+        '-real' (for example 'numpy-real', 'torch-cuda-real'); a backend object, returned
+        unchanged; or 'auto'. Without '-real' the dtype is complex128 (complex64 on MPS);
+        with it, float64 (float32 on MPS). 'torch-cuda' is the current CUDA device.
+        'auto' resolves to 'numpy-real' when ``is_real_problem(mpo, init_mps)`` holds and to
+        'numpy' otherwise; it needs `mpo` and never picks torch.
+    mpo, init_mps : sequence of tensors or None, default None
+        Inspected by 'auto' only.
+    real_tol : float, default 1e-12
+        Tolerance of 'auto' on the imaginary parts, relative to ``max(1, abs(real part))``.
 
-    ``spec='auto'`` -- the production statics default -- resolves to
-    ``'numpy-real'`` when `is_real_problem(mpo, init_mps)` holds and to ``'numpy'`` otherwise,
-    so it engages the cheaper real dtype exactly where it is valid and falls back to complex
-    for a genuinely complex MPO/initial state (e.g. one built with SY) rather than either
-    silently truncating it or hard-failing a call that used to work. Requires `mpo=`; raises
-    if omitted, since there is nothing to inspect. Torch specs are unaffected -- 'auto' only
-    ever resolves to a numpy spec, matching the CPU-default front doors it backs.
+    Returns
+    -------
+    NumpyBackend or TorchBackend
+        The backend, or `spec` itself when it is already a backend.
+
+    Notes
+    -----
+    A real backend suits ground states of real Hamiltonians (the TFIM, or anything built
+    without SY): it takes half the memory and fewer flops. Time evolution (`tdvp*_evolve`,
+    `tebd_evolve`) and the non-Hermitian transfer spectrum (`vumps`) need a complex backend;
+    a real ground state becomes complex with one cast at the start of the evolution. A real
+    backend refuses data with a non-negligible imaginary part instead of dropping it.
     """
     if not isinstance(spec, str):
         return spec                                   # already a backend object
@@ -467,6 +474,20 @@ class PlainEinsumNumpyBackend(NumpyBackend):
         return np.einsum(sub, *ops, optimize=True)
 
 
+def _torch_device(torch, device):
+    """`device` as a torch.device written as tensors report theirs: "cuda" is the current
+    CUDA device, "mps" is "mps:0" and "cpu:<n>" is "cpu", so that backends built from a name
+    and from a tensor's device compare equal."""
+    d = torch.device(device)
+    if d.index is None and d.type == "cuda" and torch.cuda.is_available():
+        return torch.device("cuda", torch.cuda.current_device())
+    if d.index is None and d.type == "mps":
+        return torch.device("mps", 0)
+    if d.type == "cpu":
+        return torch.device("cpu")
+    return d
+
+
 class TorchBackend:
     name = "torch"
     is_torch = True
@@ -474,7 +495,7 @@ class TorchBackend:
     def __init__(self, device="cpu", dtype=None):
         import torch
         self.torch = torch
-        self.device = torch.device(device)
+        self.device = _torch_device(torch, device)
         if dtype is None:
             # MPS is single precision only; CPU/CUDA get double
             dtype = torch.complex64 if self.device.type == "mps" else torch.complex128
@@ -534,7 +555,7 @@ class TorchBackend:
         """Cast to reduced ('low', complex64) or full ('high', complex128) precision.
 
         Hook for mixed-precision truncation: the range finder's sketch GEMMs run in
-        'low' (fp32/TF32 — where the L40S is ~30-100x its fp64 rate), the
+        'low' (fp32/TF32, much faster than fp64 on many GPUs), the
         projected core in 'high' (fp64) for accuracy. On an fp32-only device (MPS)
         'high' would upcast, so the mixed path targets CPU/CUDA.
         """
@@ -578,7 +599,7 @@ class TorchBackend:
     def stack(self, xs):
         """Stack a list of 0-d device scalars into one device vector. The whole point is that
         the Lanczos alphas/betas NEVER become Python floats: `.item()` on each of them is a
-        device->host synchronisation, and the profile measured 91 of those per site-step."""
+        device->host synchronisation, and a Krylov solve would need two per iteration."""
         return self.torch.stack([self.torch.as_tensor(x, device=self.device) if not
                                  isinstance(x, self.torch.Tensor) else x for x in xs])
 
@@ -612,7 +633,7 @@ class TorchBackend:
 
     # --- CUDA-GRAPH-CAPTURABLE exponentials of the Krylov tridiagonal -------------
     #
-    # `torch.matrix_exp` is NOT capturable, and that is MEASURED rather than assumed: it picks its Pade degree and squaring
+    # `torch.matrix_exp` cannot be captured: it picks its Pade degree and squaring
     # count from ||A||_1 read back to the HOST, so recording it raises "operation not
     # permitted when stream is capturing". Both routes below remove that host branch, and
     # both exploit the same structural fact -- the Krylov tridiagonal T is REAL SYMMETRIC
@@ -732,14 +753,10 @@ class TorchBackend:
     def svd_batched(self, A):
         """Economy SVD of a STACK of matrices, (k, m, n) -> (k, m, p), (k, p), (k, p, n).
 
-        On CUDA the driver is `gesvd`, as in `svd`. Measured on real truncation blocks (H100
-        MIG slice, complex128), `gesvdj` was 1.11-1.23x slower per call on padded (6, 96, 96)
-        batched-2TDVP stacks and 1.18-3.06x slower on serial blocks at chi 48-384; a batched
-        2TDVP step ran 1.04x faster with `gesvd`, with the same kept ranks and energies to
-        6e-14, and `gesvd`'s singular values were ~100x tighter (6e-15 against 7e-13 of
-        sigma_max). cuSOLVER batches its Jacobi solver only up to 32x32, so `gesvdj` gains
-        nothing from the stack at these sizes. Random matrices of the same shapes reverse the
-        ordering, so benchmark on real blocks.
+        On CUDA the driver is `gesvd`, as in `svd`: on truncation blocks torch's default,
+        `gesvdj`, is slower and its singular values less accurate, and cuSOLVER batches its
+        Jacobi solver only up to 32x32, so the stack gains it nothing. Random matrices of the
+        same shapes can rank the drivers the other way.
 
         TNKIT_CUDA_SVD_DRIVER_BATCHED selects another driver ('default' = torch's choice,
         i.e. `gesvdj`). `gesvdj` can stop at its sweep limit and only warn; that warning is
@@ -765,11 +782,9 @@ class TorchBackend:
         return self.torch.linalg.svd(A, full_matrices=False, driver="gesvd")
 
     def svd(self, A):
-        # Torch's default CUDA
-        # SVD driver is gesvdj, ~14-20x slower than gesvd at identical fp64 accuracy
-        # (measured). Prefer gesvd as the PRIMARY path on CUDA. The env toggle
-        # TNKIT_CUDA_SVD_DRIVER=default restores the old default for A/B re-profiling. CPU/MPS
-        # keep driver=None (unchanged); the except-fallback below is untouched.
+        # On CUDA, gesvd: torch's default driver, gesvdj, is much slower at the same fp64
+        # accuracy. TNKIT_CUDA_SVD_DRIVER=default selects torch's default instead. CPU and MPS
+        # keep driver=None, with the gesvd fallback below.
         driver = None
         if self.device.type == "cuda":
             _d = os.environ.get("TNKIT_CUDA_SVD_DRIVER", "gesvd")

@@ -1,21 +1,19 @@
-"""Matrix-free eigensolvers for DMRG, fully backend-agnostic.
+"""Matrix-free eigensolvers and Krylov exponentials for DMRG and TDVP, on any backend.
 
-The whole point: the only operation these need is the *action* of the effective
-Hamiltonian on a vector (a tensor contraction). They never form the dense
-operator and never call eigh/svd, so they run natively on ANY backend that does
-matmul — including Apple's MPS and (in production) NVIDIA, where they keep the
-entire eigensolve on-device with no host<->device transfer.
+These need only the action of the effective Hamiltonian on a vector (a tensor contraction).
+They never form the dense operator and never call eigh or svd on it, so they run on any backend
+that does matmul (numpy, torch on CPU, CUDA or Apple MPS) and keep the whole solve on the device.
 
-Two solvers:
-  - lanczos_ground:  Lanczos with selective full reorthogonalisation, returns the
-                     lowest eigenpair. Robust default for DMRG.
-  - lobpcg_ground:   LOBPCG (block size 1) with optional preconditioner; often
-                     fewer matvecs than Lanczos when warm-started from the
-                     previous sweep's site tensor (the DMRG use-case).
+Ground states:
+  - lanczos_ground: Lanczos with full reorthogonalisation; the lowest eigenpair.
+  - lanczos_ground_restart: thick-restart Lanczos, the same answer with a bounded basis.
+  - lanczos_ground_mixed: thick restart with low-precision matvecs and a double-precision
+    refinement.
+  - lobpcg_ground: LOBPCG (block size 1).
+  - scipy_host_ground: scipy's Lanczos on the host around a device matvec.
 
-`matvec` is any callable x -> H x operating on a flat 1-D array of the chosen
-backend. `ops` is a tiny linear-algebra adaptor (see backend.py) so the same
-code runs on numpy or torch tensors.
+`matvec` is any callable x -> H x on a flat 1-D array of the chosen backend. `ops` is the
+backend (see backend.py), so the same code runs on numpy or torch tensors.
 """
 from __future__ import annotations
 import os
@@ -34,38 +32,29 @@ except Exception:                                    # pragma: no cover
 
 
 def check_reorth_periodic(reorth, stop):
-    """Guard against the REFUTED reorth='periodic' setting.
+    """Refuse or warn on ``reorth='periodic'``, for every statics solver that takes `reorth`.
 
-    Shared by every statics solver that accepts a `reorth` choice, not just
-    `lanczos_ground` -- `reorth='periodic'` is refuted regardless of which local
-    eigensolver a caller asked for (`lanczos`, `lanczos-restart`, ...), and an
-    explicit request for it must not be silently ignored just because the chosen
-    solver (e.g. thick restart) does not itself consult `reorth`.
-
-    'periodic' re-orthogonalises only every `reorth_period` steps, which is
-    identical to full for the ~2-iteration warm-started solves that dominate, but
-    at chi >= 64 near criticality some solves need 100+ iterations, the basis
-    loses orthogonality, a ghost eigenpair forms and DMRG stalls ABOVE the true
-    energy (measured dE ~ 1.3-2.0 -- no ground state at all).
-
-    The energy-delta stop MASKED this at moderate chi by quitting before the long
-    solves ran far enough to matter. The residual stop does not, so the
-    combination fails loudly. Neither should fail silently.
+    'periodic' reorthogonalises only every `reorth_period` steps. That equals 'full' on short
+    warm-started solves, but the long local solves (100 or more iterations) that occur at large
+    bond dimension near a critical point lose orthogonality: a spurious copy of an eigenpair
+    forms and DMRG stalls above the ground-state energy. With ``stop='residual'`` this raises;
+    with ``stop='energy'``, whose early exits can hide the problem, it warns. The check is made
+    even for solvers that ignore `reorth` (thick restart), so an explicit request is never
+    silently dropped.
     """
     if reorth != "periodic":
         return
     if stop == "residual":
         raise ValueError(
-            "reorth='periodic' with stop='residual' is refuted: periodic reorthogonalisation "
-            "loses basis orthogonality on the long (100+ iteration) local solves that occur at "
-            "chi >= 64 near criticality, and the residual rule then iterates against a "
-            "tridiagonal that no longer describes the basis. Measured dE ~ 0.8-2.0 (no ground "
-            "state). Use reorth='full' -- which is also FASTER here, since correct solves need "
-            "a median of 2 iterations.")
+            "reorth='periodic' with stop='residual' is not supported: periodic "
+            "reorthogonalisation loses basis orthogonality on long (100+ iteration) local "
+            "solves, which occur at large bond dimension near a critical point, and the "
+            "residual rule then iterates against a tridiagonal that no longer describes the "
+            "basis. Use reorth='full', which costs little since most solves take a few "
+            "iterations.")
     warnings.warn(
-        "reorth='periodic' is refuted at chi >= 64 near criticality (ghost eigenpair from lost "
-        "orthogonality). It only looks correct "
-        "because short warm-started solves make it equivalent to 'full'. Use reorth='full'.",
+        "reorth='periodic' loses orthogonality on long local solves (large bond dimension "
+        "near a critical point) and can stall DMRG above the ground state. Use reorth='full'.",
         RuntimeWarning, stacklevel=2)
 
 
@@ -105,57 +94,36 @@ def _tridiag_ground_vector(alphas, betas, k):
 
 def lanczos_expm_fixed(matvec, v, tau, ops, m, info=None, reorth="cgs2", expm_where="host",
                        squarings=8, taylor_order=18):
-    """GPU FAST PATH for exp(tau H) v: a FIXED-length Krylov schedule with no host branch, one
-    synchronisation per solve instead of ~2m, and batched re-orthogonalisation. Same mathematics
-    as `lanczos_expm`, different control flow.
+    """exp(tau H) v from a FIXED number `m` of Krylov steps, with no host branch. The same
+    mathematics as `lanczos_expm`, in a control flow suited to GPUs.
 
-    Why a second implementation rather than a flag inside the first. The adaptive solver's cost
-    on GPU is not arithmetic — measurement showed the 1TDVP
-    per-step cost scaling as chi^0.14 against the FLOP-bound chi^3, i.e. the card is idle waiting for
-    Python. The three things keeping it idle are all *control flow*, and each is impossible to
-    remove without changing the loop's shape:
+    The adaptive solver reads scalars back to the host at every step (to test for breakdown
+    and to evaluate its error estimate with a host `scipy.linalg.expm`), and each read waits
+    for the device queue to drain. Here:
 
-      1. **91 device->host synchronisations per site-step.** Every `to_scalar(vdot(...))` and
-         `to_scalar(norm(...))` is an `.item()`: the host blocks until the queue drains, then
-         the queue refills from empty. Here alphas and betas stay 0-d DEVICE tensors from the
-         first iteration to the last, and the projected tridiagonal is assembled from them with
-         `ops.stack` + `ops.tridiag`. Nothing is read back, so nothing stalls.
-      2. **44 host `scipy.expm` calls per site-step.** The adaptive stop needs `expm(tau T)` at
-         *every* Krylov step to evaluate the Saad first-neglected-term estimate, and computes it
-         on the host from host floats. A fixed schedule needs the exponential exactly ONCE, at
-         the end. Note what is NOT done here: moving that one exponential on-device
-         (`torch.matrix_exp`) was MEASURED SLOWER than leaving it on the host, because
-         scaling-and-squaring a 10x10 is tens of tiny kernel launches to do microseconds of
-         arithmetic. The win is calling it once rather than m-1 times; where it runs is a
-         second-order question and the measurement answered it the other way (`expm_where`).
-      3. **403 re-orthogonalisation `vdot` calls per site-step.** The sequential
-         modified-Gram-Schmidt loop `for u in V: w -= vdot(u,w)*u` issues two kernel launches per
-         basis vector per iteration, i.e. O(m^2) launches. Two batched classical-Gram-Schmidt
-         passes (CGS2) against a PREALLOCATED buffer give the same orthogonality in 4 launches
-         per iteration, transported from the DMRG
-         eigensolver to the dynamics one. Twice is what makes CGS as stable as MGS
-         (Giraud-Langou-Rozloznik), and the crossover-with-basis-size trap is avoided by
-         never restacking the basis per iteration.
+      1. The Lanczos coefficients stay 0-d device tensors throughout, and the tridiagonal is
+         assembled from them on the device (`ops.stack`, `ops.tridiag`); nothing is read back
+         during the loop.
+      2. The small exponential is taken once, at the end, on the host by default
+         (`expm_where='host'`: one transfer of an m x m matrix). 'device' uses
+         `torch.matrix_exp`; 'eigh' and 'taylor' are free of host branches, so they can run
+         inside a CUDA graph.
+      3. Reorthogonalisation is two batched classical Gram-Schmidt passes (CGS2) against a
+         preallocated basis, a few kernel launches per step instead of two per basis vector.
+         Two passes make CGS as stable as modified Gram-Schmidt (Giraud, Langou and
+         Rozloznik).
 
-    BREAKDOWN WITHOUT A BRANCH. A fixed schedule cannot test `beta < tol` and stop, because the
-    test is a sync. It does not need to: the Lanczos coefficient that carries basis vector j into
-    the answer is `expm(tau T)[j, 0]`, which is bounded by the product of the off-diagonals
-    beta_1...beta_j over (j-1)!. If the space breaks down at step p then beta_p is at roundoff, so
-    every j > p contributes at roundoff regardless of what direction the (meaningless) vector
-    V_{j} points in. The only thing that must be prevented is 0/0, and `ops.guard_denom` does that
-    arithmetically. Breakdown therefore costs a few wasted matvecs and nothing else.
+    Breakdown needs no branch. The coefficient of basis vector j in the result is
+    ``expm(tau T)[j, 0]``, bounded by beta_1 ... beta_j / (j-1)!. If the space breaks down at
+    step p, beta_p is at rounding level and every later vector contributes at rounding level,
+    whatever direction it points in; `ops.guard_denom` only prevents 0/0.
 
-    `m` is the FIXED Krylov dimension, capped at the vector length (a shape, not a value — free).
-    Choosing it is the caller's job; `tnkit.tdvp` calibrates it from a warmup sweep against the
-    adaptive solver's own measured requirement.
+    `m` is capped at the vector length. `tnkit.tdvp` chooses it from the Krylov dimensions the
+    adaptive solver needs in a first sweep.
 
-    `reorth` selects the re-orthogonalisation kernel: 'cgs2' (default, batched, plain matmuls),
-    'cgs2e' (identical but expressed as `einsum`, to price the equation-string parsing), or 'mgs'
-    (the sequential loop). 'mgs' exists so the per-lever benchmark can price the batched reorth
-    SEPARATELY from the sync/host-expm removal, against the same fixed schedule — otherwise the
-    two are confounded and the waterfall is a guess. It is also the honest fallback above the
-    chi ~ 256 crossover where measurement showed CGS2 losing (0.9623x at
-    chi=512), well above the chi-cap 48 a two-packet collision run uses.
+    `reorth`: 'cgs2' (default, batched matmuls), 'cgs2e' (the same written with `einsum`) or
+    'mgs' (the sequential modified Gram-Schmidt loop, for comparison and as a fallback for
+    large vectors).
     """
     n = 1
     for s in v.shape:
@@ -163,14 +131,11 @@ def lanczos_expm_fixed(matvec, v, tau, ops, m, info=None, reorth="cgs2", expm_wh
     m = max(1, min(int(m), n))
     shape = v.shape
 
-    # TWO preallocated buffers: the basis and its conjugate. Carrying the conjugate costs one
-    # extra (m, n) allocation -- ~1 MB at chi-cap 48 -- and removes the
-    # (k, n) `conj(Vlive)` copy that CGS2 would otherwise pay on EVERY iteration. Both operands
-    # handed to einsum are then contiguous materialised buffers, which is what keeps the call on
-    # the fast cuBLAS path; the alternative of conjugating `w` instead is the REFUTED `cgs2v2`
-    # (23x slower -- a lazy conj view falls off that path).
+    # Two preallocated buffers: the basis and its conjugate. The conjugate costs one more
+    # (m, n) buffer and avoids a (k, n) conj copy at every step; both einsum operands are then
+    # contiguous, which keeps the call on the fast matmul path.
     cgs = reorth in ("cgs2", "cgs2e")
-    use_mm = (reorth == "cgs2")                      # 'cgs2e' keeps the einsum form, for the A/B
+    use_mm = (reorth == "cgs2")                      # 'cgs2e' uses einsum
     Vb = ops.zeros((m, n))
     Vc = ops.zeros((m, n)) if cgs else None
     beta0 = ops.norm(v)                              # 0-d, DEVICE, never read
@@ -183,19 +148,14 @@ def lanczos_expm_fixed(matvec, v, tau, ops, m, info=None, reorth="cgs2", expm_wh
         w = matvec(Vb[k])
         if k > 0:
             w = w - betas[k - 1] * Vb[k - 1]
-        # CGS2 against the live basis -- VIEWS into the preallocated buffers, never a restack
-        # (`torch.stack(V)` per iteration is copy-bound in the
-        # vector dimension and OOM'd at chi=512, and capping m does not cap that copy).
-        # The FIRST projection coefficient against V_k IS the Lanczos alpha, so it is read out of
-        # the pass that was going to compute it anyway rather than by a separate `vdot` + `axpy`
-        # pair -- two fewer kernel launches per iteration, and one fewer rounding step.
+        # CGS2 against the live basis, as views into the buffers (restacking the basis at every
+        # step would copy it). The first projection coefficient against V_k is the Lanczos
+        # alpha, so it is read from that pass rather than from a separate vdot.
         Vlk = Vb[:k + 1]
         if cgs:
             Vck = Vc[:k + 1]
-            # `mv`/`vm` are plain matmuls. `torch.einsum` re-parses its equation STRING on every
-            # call, and at m=10 this loop issues 40 of them per solve and ~160 per site-step, for
-            # contractions whose shapes never change -- the torch-side twin of the recomputed
-            # `einsum_path` the cost model flagged on the numpy arm. Priced as its own arm.
+            # `mv`/`vm` are plain matmuls; `torch.einsum` parses its equation string on every
+            # call.
             mv_, vm_ = ((ops.mv, ops.vm) if use_mm else
                         (lambda A, x: ops.einsum("jn,n->j", A, x),
                          lambda cc, A: ops.einsum("j,jn->n", cc, A)))
@@ -204,7 +164,7 @@ def lanczos_expm_fixed(matvec, v, tau, ops, m, info=None, reorth="cgs2", expm_wh
             w = w - vm_(c, Vlk)
             c = mv_(Vck, w)
             w = w - vm_(c, Vlk)
-        else:                                        # 'mgs' -- the sequential loop, for the A/B
+        else:                                        # 'mgs': the sequential loop
             a = ops.vdot(Vb[k], w).real
             alphas.append(a)
             w = w - a * Vb[k]
@@ -219,10 +179,9 @@ def lanczos_expm_fixed(matvec, v, tau, ops, m, info=None, reorth="cgs2", expm_wh
                 Vc[k + 1] = ops.conj(vn)
     da, eb = ops.stack(alphas), (ops.stack(betas) if betas else None)
     if expm_where in ("eigh", "taylor"):
-        # CUDA-GRAPH ROUTES. `torch.matrix_exp` is not capturable -- it reads ||A||_1
-        # back to the host to choose its Pade degree -- so `expm_where='device'` cannot go
-        # inside a graph even though every other operation in this function already can.
-        # Both routes below are host-branch-free; see `backend.expm_sym_tridiag_eigh`.
+        # Routes for CUDA graphs: `torch.matrix_exp` reads a norm back to the host to choose its
+        # Pade degree, so it cannot be captured. Both routes below have no host branch; see
+        # `backend.expm_sym_tridiag_eigh`.
         if expm_where == "eigh":
             E = ops.expm_sym_tridiag_eigh(da, eb, tau)
         else:
@@ -237,24 +196,19 @@ def lanczos_expm_fixed(matvec, v, tau, ops, m, info=None, reorth="cgs2", expm_wh
         return out
     T = ops.tridiag(da, eb)
     if expm_where == "host":
-        # ONE synchronisation per solve, on an m x m matrix (~1.6 kB at m=10), against the 2m the
-        # adaptive path pays and the m-1 host `scipy.expm` calls it makes. `torch.matrix_exp` runs
-        # scaling-and-squaring as a chain of tiny GEMMs plus a linear solve -- on a 10x10 that is
-        # tens of kernel launches to do microseconds of arithmetic, and it MEASURED slower than
-        # this single transfer (see the per-lever benchmark). The device path is kept behind
-        # `expm_where='device'` because the balance must invert at larger m.
+        # One synchronisation per solve, on an m x m matrix. On a small matrix
+        # `torch.matrix_exp` is a chain of tiny kernels, slower than this transfer; it is
+        # available as `expm_where='device'` for larger m.
         E = ops.expm_host(tau * T)
         c = beta0 * ops.array(E[:, 0])
     else:
         c = beta0 * ops.expm(tau * T)[:, 0]
     out = ops.vm(c, Vb).reshape(shape)
     if info is not None:
-        # Krylov dimension is a SHAPE and free to report; every other diagnostic in the contract
-        # is a device scalar, and reading one back would reintroduce exactly the synchronisation
-        # this path exists to delete. They are reported as NaN, which `_KrylovMeter` already
-        # skips NaN-safely. The adaptive step-size controller consumes `est_ref` and therefore CANNOT
-        # run on this path -- `tdvp*_evolve` refuses the combination rather than silently
-        # feeding the controller a zero.
+        # The Krylov dimension is a shape and free to report. The other diagnostics are device
+        # scalars, and reading one back would add a synchronisation, so they are NaN
+        # (`_KrylovMeter` skips NaN). The adaptive step-size controller needs `est_ref`, so
+        # `tdvp*_evolve` refuses that combination with this path.
         info["krylov_dim"] = m
         info["err_est"] = float("nan")
         info["beta1"] = float("nan")
@@ -278,7 +232,7 @@ class _ExpmMonitor:
     error estimates, the adaptive stop, the coefficients and `info`."""
 
     def __init__(self, tau, beta0, tol, adaptive, info, est_ref_j):
-        if adaptive is None:                         # env override so the A/B needs no plumbing
+        if adaptive is None:                         # TNKIT_EXPM_ADAPTIVE=0 turns it off
             adaptive = os.environ.get("TNKIT_EXPM_ADAPTIVE", "1") != "0"
         self.tau, self.beta0, self.tol, self.adaptive = tau, beta0, tol, adaptive
         self.info, self.est_ref_j = info, est_ref_j
@@ -295,12 +249,9 @@ class _ExpmMonitor:
             if self.info is not None and self.est_ref_at == 0:
                 self.est_ref, self.est_ref_at = 0.0, k + 1   # exact breakdown: no neglected term
             return "breakdown"
-        # ADAPTIVE STOP. The fixed m=30 had no error estimate at all -- it neither checked that 30
-        # was enough nor noticed when it was far too many. Measured:
-        # at the default dt=0.05 machine precision is reached at m=8, so m=30 spent ~3.75x the
-        # matvecs it needed in the dominant TDVP kernel. This is the standard a-posteriori Krylov
-        # estimator (Saad 1992) -- the first neglected term, |beta_j| |tau| |exp(tau T)[j-1,0]| ||v||.
-        # It is a conservative over-estimate (measured est/true in [4, 16]), so stopping on it is safe.
+        # Adaptive stop on the a-posteriori Krylov estimate of Saad (1992), the first neglected
+        # term: |beta_j| |tau| |exp(tau T)[j-1, 0]| ||v||. It over-estimates the error, so
+        # stopping on it is safe; at small time steps it stops well below the cap `m`.
         jj = len(alphas)
         # `est_ref` freezes the SAME estimator at a fixed j so it stays dt-sensitive; the
         # adaptive stop drives `est` to `tol` and so cannot be used to choose dt.
@@ -401,10 +352,9 @@ def lanczos_expm(matvec, v, tau, ops, m=30, tol=1e-12, adaptive=None, info=None,
 def _tridiag_ground_pair(alphas, betas, k):
     """(smallest eigenvalue, its eigenvector) of the k x k tridiagonal, in one solve.
 
-    Used by the residual stopping rule, which needs the LAST COMPONENT of the ground Ritz
-    vector every step. Cost is O(k^2)-O(k^3) host work on a k <= max_iter tridiagonal —
-    negligible beside one device matvec (3.2 GFLOP at chi=512), and the same trick
-    ``lanczos_ground_restart`` already uses every step.
+    Used by the residual stopping rule, which needs the last component of the ground Ritz
+    vector at every step. The host work on a k <= max_iter tridiagonal is small beside one
+    matvec.
     """
     d = np.asarray(alphas[:k], dtype=np.float64)
     if k == 1:
@@ -437,34 +387,18 @@ def lanczos_ground(matvec, v0, ops, tol=1e-8, max_iter=200, reorth="full",
     tol : float
         Convergence threshold, read against `stop`.
     stop : {"residual", "energy"}
-        WHAT `tol` MEASURES, and the single most consequential argument here.
+        What `tol` measures.
 
-          residual (default) — the true Ritz residual ||H x - e x|| = |beta|*|y[-1]|,
-              i.e. convergence of the EIGENVECTOR. This is the quantity DMRG
-              consumes: x goes straight into the SVD truncation and into the MPS.
-          energy (legacy)    — |e - e_prev| < tol, i.e. convergence of the Rayleigh
-              quotient, which is what most textbook implementations stop on.
+          residual (default): the Ritz residual ``norm(H x - e x) = abs(beta * y[-1])``,
+              the convergence of the eigenvector. DMRG uses the vector: it goes into the
+              truncation and into the MPS.
+          energy: ``abs(e - e_prev) < tol``, the convergence of the Rayleigh quotient.
 
-        These are NOT the same standard, and the difference is not small. The
-        Rayleigh quotient is QUADRATICALLY accurate in the eigenvector error, so
-        the energy rule returns a vector only ~sqrt(tol) converged: measured at
-        tol = 1e-10, "energy" leaves a residual of ~1e-5 where "residual" leaves
-        ~1e-11, and at g = 0.9 that cost five orders of DMRG accuracy.
-
-        The failure is silent — a run under "energy" reports converged=True and an
-        energy that looks settled. This distinction has invalidated real comparisons
-        before: a head-to-head against the thesis implementation reported a 6.54x
-        speed-up while actually stopping 16,000x short of the comparison run's
-        convergence; an external baseline built on cuTensorNet showed a flat accuracy
-        floor of 2.2e-5 at every chi, which is sqrt(1e-9) — the stopping rule, not the
-        backend; a thick-restart pre-adoption run reported converged=True at a true
-        residual of 7.7e-6; and a finite-size-scaling exponent revalidation had the
-        energy rule masking a separately refuted reorthogonalisation setting.
-        Measured, "residual" gives 172x / 1,272x / 21,794x better dE at chi = 128 /
-        256 / 512, for 8-25% end-to-end wall.
-
-        Keep the default. Set "energy" only to reproduce an old number, and record
-        that you did. `dmrg` exposes it as `eig_stop`.
+        The Rayleigh quotient is quadratically accurate in the eigenvector error, so the
+        energy rule returns a vector converged only to about ``sqrt(tol)``: at tol = 1e-10
+        the residual is about 1e-5 under "energy" and about 1e-11 under "residual". Nothing in
+        the output shows the difference, since the energy looks settled either way. `dmrg`
+        exposes this as `eig_stop`.
     max_iter : int
         Hard cap on Krylov dimension.
     reorth : {"full", "periodic", "none"} (or bool for back-compat)
@@ -490,9 +424,7 @@ def lanczos_ground(matvec, v0, ops, tol=1e-8, max_iter=200, reorth="full",
     elif reorth is False:
         reorth = "none"
 
-    # reorth="periodic" is REFUTED -- see
-    # `check_reorth_periodic` above, which is the single source of truth for this check so
-    # that every statics solver enforces it identically, not just this one.
+    # reorth="periodic": see `check_reorth_periodic`, shared by every statics solver.
     check_reorth_periodic(reorth, stop)
     _t = (lambda: time.perf_counter()) if timers is not None else None
 
@@ -531,7 +463,7 @@ def lanczos_ground(matvec, v0, ops, tol=1e-8, max_iter=200, reorth="full",
         if stop == "residual":
             e, y_min = _tridiag_ground_pair(alphas, betas, k)
         else:
-            # legacy: eigenvalue only (cheaper per step, but see the note below)
+            # stop="energy": the eigenvalue only (cheaper per step; see `stop`)
             e = float(_tridiag_ground_value(alphas, betas, k))
             y_min = None
         if _t:
@@ -543,15 +475,8 @@ def lanczos_ground(matvec, v0, ops, tol=1e-8, max_iter=200, reorth="full",
         # ends the iteration (defensive: a malformed block can't poison eigh).
         breakdown = (not np.isfinite(beta) or not np.isfinite(alpha)
                      or beta < 1e-12 * max(1.0, abs(alpha)))
-        # STOPPING RULE.
-        #   "residual" (default): the TRUE Ritz residual ||H x - e x|| = |beta| * |y_min[-1]|,
-        #     i.e. convergence of the EIGENVECTOR — the quantity DMRG actually consumes, since
-        #     x goes straight into the SVD truncation and into the MPS.
-        #   "energy" (legacy): |e - e_prev| < tol, i.e. convergence of the Rayleigh quotient.
-        # These are not the same standard. The Rayleigh quotient is quadratically accurate in
-        # the eigenvector error, so an energy-delta stop leaves the vector only ~sqrt(tol)
-        # converged: measured at tol=1e-10, "energy" returns residual ~1e-5 while "residual"
-        # returns ~1e-11, and at g=0.9 that cost 5 orders of DMRG accuracy.
+        # Stopping rule (see `stop`): the Ritz residual abs(beta * y_min[-1]), or the change of
+        # the Rayleigh quotient.
         if stop == "residual":
             hit = abs(beta) * abs(float(y_min[-1])) < tol
         else:
@@ -584,14 +509,11 @@ def lanczos_ground_restart(matvec, v0, ops, tol=1e-8, max_iter=200, m=40, k=10,
     """Lowest eigenpair via THICK-RESTART Lanczos (Wu & Simon, SIAM J. Matrix Anal.
     2000) — memory-capped Krylov with full reorthogonalisation *within the window*.
 
-    The `reorth="full"` correctness fix
-    stores the WHOLE Krylov basis; near criticality local solves run 100+ iterations, so at
-    χ≥1024 the basis alone is tens of GB and the O(k²) reorth cost explodes. Thick-restart
-    caps the basis at ``m`` vectors: run Lanczos to dimension ``m``, keep the ``k`` lowest
-    Ritz vectors (which carry the useful spectral information) plus the residual direction,
-    and continue. This is a *different* answer to the same orthogonality-loss problem that
-    caused the ghost-eigenpair stall in periodic reorth — here orthogonality is maintained
-    exactly against the ≤m stored vectors, so no ghost eigenpair can form.
+    Full reorthogonalisation stores the whole Krylov basis. Near a critical point a local
+    solve can take 100 or more iterations, so at large bond dimension the basis and the
+    O(k²) reorthogonalisation grow large. Thick restart caps the basis at ``m`` vectors: run
+    Lanczos to dimension ``m``, keep the ``k`` lowest Ritz vectors plus the residual
+    direction, and continue. Orthogonality is kept exactly against the ≤ m stored vectors.
 
     The projected matrix is tridiagonal within a cycle and picks up an **arrowhead** border
     at each restart (the kept Ritz values on the diagonal, coupled to the first post-restart
@@ -650,21 +572,17 @@ def lanczos_ground_restart(matvec, v0, ops, tol=1e-8, max_iter=200, m=40, k=10,
         if _t:
             timers["matvec"] += _t() - t0
             t0 = _t()
-        # Full reorth within the window (≤ m+1 vectors).
-        #   "cgs2": two BATCHED classical-Gram-Schmidt passes. Each pass is two GEMVs against
-        #     the whole live buffer instead of nV sequential vdot+axpy pairs, so the traffic is
-        #     one streaming read of Vb per pass rather than nV separate kernel launches. Twice
-        #     is what makes CGS as stable as MGS (Giraud-Langou-Rozloznik).
-        #   "mgs": the original sequential modified-Gram-Schmidt loop, kept for A/B.
-        # Reorth is ~34% of the eigensolver, and it is the bandwidth-bound term that caps every
-        # GEMM-side speed-up (the Amdahl bound on any scheme that only accelerates the matmuls).
+        # Full reorthogonalisation within the window (≤ m+1 vectors).
+        #   "cgs2": two batched classical Gram-Schmidt passes, each two GEMVs against the live
+        #     buffer instead of nV sequential vdot + axpy pairs. Two passes make CGS as stable
+        #     as MGS (Giraud, Langou and Rozloznik).
+        #   "cgs2v2": the same, conjugating w instead of the buffer.
+        #   "mgs": the sequential modified Gram-Schmidt loop.
         if reorth_alg in ("cgs2", "cgs2v2"):
             Vlive = Vb[:nV]
             if reorth_alg == "cgs2v2":
-                # Avoid materialising conj(Vlive): that is a full (nV, n) copy EVERY step
-                # (~650 MB at chi=512 with nV=41), which is what erased cgs2's advantage at
-                # large chi. Use <u,w> = conj(u).w = conj( u . conj(w) ) so only the length-n
-                # vector w and the length-k coefficients are conjugated, never the buffer.
+                # <u, w> = conj(u . conj(w)): only w and the coefficients are conjugated, not
+                # the (nV, n) buffer.
                 wc = ops.conj(w)
                 for _ in range(2):
                     c = ops.conj(ops.einsum("kn,n->k", Vlive, wc))
@@ -709,14 +627,9 @@ def lanczos_ground_restart(matvec, v0, ops, tol=1e-8, max_iter=200, m=40, k=10,
             evals, evecs = np.linalg.eigh(M[:cur, :cur])
             kk = min(k, cur - 1)
             Yk = evecs[:, :kk]                    # kk lowest Ritz vectors (columns)
-            # New basis: kk Ritz vectors U = Yk^T @ Vb[:cur], then the carried residual v_new.
-            # BATCHED: one (kk x cur)(cur x n) GEMM. The previous form was a kk*cur loop of
-            # full-length AXPYs, each allocating -- ~400 device vector ops per restart at the
-            # default m=40,k=10. Free at the chi=32/64 the restart was validated at; at chi=512 with
-            # max_iter=4*chi it is up to ~50 restarts ~ 20k vector ops, the same copy-bound
-            # pattern that made naive CGS2 slower at chi=256 and OOM at chi=512.
-            # Writes into a temp then back into the buffer, so
-            # peak stays (m+1+kk) rows rather than doubling.
+            # New basis: kk Ritz vectors U = Yk^T @ Vb[:cur], then the carried residual v_new,
+            # in one (kk x cur)(cur x n) GEMM. It goes through a temporary and back into the
+            # buffer, so the peak is m + 1 + kk rows.
             vnew = w / beta                       # next Lanczos direction (residual)
             U = ops.einsum("rc,rn->cn", ops.array(Yk), Vb[:cur])   # (kk, n)
             Vb[:kk] = U
@@ -765,11 +678,10 @@ def lanczos_ground_mixed(matvec_lo, matvec_hi, v0, ops, tol=1e-8, max_iter=200,
                          m=40, k=10, tol_lo=1e-4, timers=None, counts=None):
     """Mixed-precision thick-restart Lanczos with an fp64 guardrail.
 
-    The inexact-Krylov bet: Lanczos builds its subspace *iteratively*, so a NOISY (fp32/TF32)
-    matvec can still steer the Krylov space to the right invariant subspace — unlike a
-    one-shot randomized sketch, whose error is frozen in. We therefore spend the cheap
-    ~25-48x fp32/TF32 matvec on the bulk of the iterations, then pay a tiny fp64 tail to
-    certify the answer:
+    Lanczos builds its subspace iteratively, so a matvec with low-precision (fp32/TF32) GEMMs
+    can still steer the Krylov space to the right invariant subspace, unlike a one-shot
+    randomized sketch, whose error stays. Most iterations therefore use the cheap matvec, and a
+    short double-precision tail certifies the answer:
 
       Stage 1 (cheap): thick-restart Lanczos with ``matvec_lo`` (fp32/TF32 GEMMs) but ALL
         projection/accumulation in fp64 (``ops`` is the fp64 backend: vdot/norm, the
@@ -814,24 +726,16 @@ def lanczos_ground_mixed(matvec_lo, matvec_hi, v0, ops, tol=1e-8, max_iter=200,
 
 
 def scipy_host_ground(matvec, v0, ops, tol=1e-8, max_iter=200, transfers=None):
-    """REFERENCE BASELINE ONLY -- emulates the prior thesis's eigensolver architecture.
-    Not a production solver: it exists so the thesis comparison can be run on ONE card.
+    """Lowest eigenpair from `scipy.sparse.linalg.eigsh` on the host, around the caller's
+    device `matvec`: each matvec copies its input to the device and its result back.
 
-    The thesis could not run a matrix-free eigensolver inside PyTorch, so it drove
-    `scipy.sparse.linalg.eigsh` (Lanczos loop on the CPU, in host memory) against an
-    effective-Hamiltonian *action* evaluated on the GPU. On a discrete GPU that pays a
-    host->device copy of the input vector and a device->host copy of the result on EVERY
-    matvec -- the thesis's measured #1 bottleneck.
+    `eig="scipy-host"` in `dmrg` differs from `eig="lanczos"` only in where the Krylov loop
+    runs and in those copies; the sweep, environments, truncation, precision and device are
+    the same, so it isolates the cost of a host eigensolver. It is a reference, not a
+    solver to run by default.
 
-    This function reproduces exactly that: scipy's Lanczos loop on the host, wrapping the
-    caller's device `matvec` in a LinearOperator that transfers both ways per call. Passing
-    `eig="scipy-host"` to dmrg() therefore changes ONE thing versus `eig="lanczos"` -- where
-    the Krylov loop lives and whether vectors cross PCIe -- while the sweep, environments,
-    truncation, precision and device stay identical. That isolates the architectural
-    contribution from the hardware, which a cross-card wall-time comparison cannot.
-
-    `transfers` : optional dict; if given, accumulates 'n' (matvec count) and 'bytes'
-    (total host<->device traffic) so the transfer volume can be reported.
+    `transfers`: optional dict; accumulates 'n' (matvec count) and 'bytes' (host-device
+    traffic).
     """
     from scipy.sparse.linalg import LinearOperator, eigsh
 
@@ -841,7 +745,7 @@ def scipy_host_ground(matvec, v0, ops, tol=1e-8, max_iter=200, transfers=None):
 
     def host_matvec(x_host):
         x_host = np.asarray(x_host, dtype=dtype).ravel()
-        x_dev = ops.array(x_host)                 # host -> device (the thesis's per-matvec cost)
+        x_dev = ops.array(x_host)                 # host -> device
         y_dev = matvec(x_dev)                     # the GPU-side effective-Hamiltonian action
         y_host = ops.to_numpy(y_dev).ravel()      # device -> host
         if transfers is not None:

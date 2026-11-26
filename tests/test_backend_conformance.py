@@ -192,3 +192,24 @@ def test_block_backend(spec):
     loose = BlockBackend(dense, strict=False)
     _close(_np(dense, loose.einsum("asb,asb->asb", a, a)), ad * ad)
     assert loose.fallbacks["einsum"] == 1
+
+
+def test_device_names_and_tensor_devices_agree(monkeypatch):
+    """A backend named "cuda" is on the device its tensors report ("cuda:<current>"), so one
+    built from the name and one built from a tensor's device mix: symmetric contractions
+    compare backend devices. CUDA is faked; nothing runs on a device."""
+    torch = pytest.importorskip("torch")
+    from types import SimpleNamespace
+    from tnkit.backend import TorchBackend
+    from tnkit.symmetric_tensor import _common_backend
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(torch.cuda, "current_device", lambda: 1)
+    named = TorchBackend("cuda", torch.float64)
+    assert named.device == torch.device("cuda:1") == TorchBackend("cuda:1").device
+    assert named.name == "torch-cuda-real"
+    a, b = SimpleNamespace(be=named), SimpleNamespace(be=TorchBackend("cuda:1", torch.float64))
+    assert _common_backend(a, b) is named
+    with pytest.raises(ValueError, match="devices"):
+        _common_backend(a, SimpleNamespace(be=TorchBackend("cuda:0", torch.float64)))
+    assert TorchBackend("mps").device == torch.device("mps:0")
+    assert TorchBackend("cpu").device == torch.device("cpu")

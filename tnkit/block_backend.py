@@ -210,13 +210,40 @@ def mpo_charges(mpo: Sequence[Any], site_charges: Sequence[Sequence[Any]], tol: 
 
 def to_block_mpo(mpo: Sequence[Any], site_charges: Sequence[Sequence[Any]], be, tol: float = 0.0,
                  left: Optional[Sequence[Any]] = None, *, sym: Symmetry):
-    """The MPO as block tensors with legs ``(wl, wr, s, s')`` of signs ``(+1, -1, +1, -1)``, in
-    `be`'s dtype and device, and for each site the dense-index orders of those legs (for
-    `BlockTensor.to_dense`). `site_charges[n][s]` is the sector label of state `s` of site `n`
-    under the symmetry `sym` (required; without one, use the dense MPO as it is). Channel
-    charges come from `mpo_charges`; entries at or below `tol` are dropped. Channels that carry
-    nothing get the trivial sector: their entries that do not fit it are dropped, the rest kept;
-    either way they add nothing to the operator."""
+    """A dense MPO as block tensors under an abelian symmetry (provisional).
+
+    Parameters
+    ----------
+    mpo : sequence of ndarray
+        The dense MPO, tensors ``(wl, wr, s, s')``. Each channel must carry one charge
+        (`mpo_charges`): write hopping and exchange terms with charged operators, S+ S- + S- S+
+        rather than XX + YY, whose channels carry two charges and make this raise.
+    site_charges : sequence of sequences
+        ``site_charges[n][s]``, the sector label of physical state s of site n under `sym`;
+        for spins 1/2 under U(1), ``[1, -1]`` (2 S^z of up and down) at every site.
+    be : backend
+        The dense backend of the blocks (dtype and device).
+    tol : float, default 0.0
+        Entries at or below `tol` in absolute value are dropped.
+    left : sequence of labels, optional
+        Charges of the first tensor's left channels; default the trivial sector, right for a
+        whole chain, not for a fragment.
+    sym : tnkit.symmetry.Symmetry
+        The abelian symmetry, keyword only and required (for example ``U1()``); without one,
+        use the dense MPO as it is.
+
+    Returns
+    -------
+    mpo : list of BlockTensor
+        Legs ``(wl, wr, s, s')`` with signs ``(+1, -1, +1, -1)``, in `be`'s dtype and device.
+    orders : list of tuple
+        For each site, the dense-index order of those legs, for `BlockTensor.to_dense`.
+
+    Notes
+    -----
+    Channels that carry nothing get the trivial sector: their entries that do not fit it are
+    dropped and the rest kept; either way they add nothing to the operator.
+    """
     chans = mpo_charges(mpo, site_charges, tol, left, sym=sym)
     out, orders = [], []
     for n, W in enumerate(mpo):

@@ -201,8 +201,7 @@ def _decompose(sym, cols: np.ndarray, basis: np.ndarray, out: Space, tol: float,
 
 
 def symmetric_mpo(mpo: Sequence[Any], sites: Sequence[SiteSpace], be=None, tol: float = 1e-10):
-    """The dense MPO `mpo` (tensors ``(wl, wr, s, s')`` in the models' basis) as symmetric
-    tensors with spaces ``(W_l, dual W_r, P, dual P)`` on the backend `be` (default numpy).
+    """A dense MPO that commutes with a symmetry, as symmetric tensors (provisional).
 
     Each bond's channels are relabelled from the left: the coefficients of every live channel
     in the coupled basis of (W_l, P, dual P) must lie in one sector c and one state m of it.
@@ -210,14 +209,33 @@ def symmetric_mpo(mpo: Sequence[Any], sites: Sequence[SiteSpace], be=None, tol: 
     of c on the bond, and channel j of state m becomes sum_i T[i, j] (c, i, m). The basis is
     orthonormal (by SVD of the coefficient vectors, each scaled to unit norm, so that channels
     of very different norm all count) times sqrt(dim P), the norm of the identity on P, which
-    keeps T of order one along a long chain. Entries below `tol` times a channel's largest
-    are zero.
+    keeps T of order one along a long chain.
 
-    Returns ``(tensors, info)``: ``info["maps"][n]`` is T as a matrix from the original channels
-    of bond n to the dense index of its space (dead channels: zero columns), so that
-    ``W_reduced[n] . maps[n + 1] = maps[n] . W[n]`` in the leg's physical basis;
-    ``info["errors"][n]`` is the largest deviation from that identity at site n, relative to
-    the largest entry of each channel. Raises if it exceeds `tol`.
+    Parameters
+    ----------
+    mpo : sequence of ndarray
+        The dense MPO, tensors ``(wl, wr, s, s')`` in the models' basis, outer bonds of one
+        channel. Write terms with operators that carry one sector per channel: for SU(2),
+        ``S+ S- + S- S+`` and ``S^z S^z`` channels, not XX + YY (raises).
+    sites : sequence of SiteSpace
+        The physical leg of each site and its basis change (`spin_half_site` for spins 1/2;
+        an SU(2) label is twice the spin).
+    be : backend, optional
+        The dense backend of the tensors; default numpy (complex128).
+    tol : float, default 1e-10
+        Entries below `tol` times a channel's largest are zero, and the largest relative
+        rebuild error allowed.
+
+    Returns
+    -------
+    tensors : list of SymmetricTensor
+        Spaces ``(W_l, dual W_r, P, dual P)``.
+    info : dict
+        ``info["maps"][n]``: T as a matrix from the original channels of bond n to the dense
+        index of its space (dead channels: zero columns), so that
+        ``W_reduced[n] . maps[n + 1] = maps[n] . W[n]`` in the leg's physical basis.
+        ``info["errors"][n]``: the largest deviation from that identity at site n, relative to
+        the largest entry of each channel; it raises if this exceeds `tol`.
     """
     from .backend import NumpyBackend
     be = be or NumpyBackend()
@@ -327,8 +345,34 @@ def random_symmetric_mps(mpo: Sequence[SymmetricTensor], chi: int, be, charge,
 
 
 def to_dense_mps(mps: Sequence[SymmetricTensor], sites: Sequence[SiteSpace]):
-    """Dense tensors (a, s, b) of a symmetric MPS on its backend, with the physical legs in the
-    models' basis; bond legs keep their dense index."""
+    """Dense tensors of a symmetric MPS (provisional).
+
+    Parameters
+    ----------
+    mps : sequence of SymmetricTensor
+        The state, from `dmrg`, `dmrg_excited` or TDVP on symmetric tensors.
+    sites : sequence of SiteSpace
+        The physical legs the MPO was reduced with.
+
+    Returns
+    -------
+    list of tensors
+        Rank-3 tensors ``(a, s, b)`` on the state's backend, with the physical legs in the
+        models' basis; bond legs keep their dense index, so a bond of n multiplets of
+        sectors c has ``sum n dim(c)`` states.
+
+    Notes
+    -----
+    The last bond holds the multiplet of the total sector. A state of SU(2) spin S > 0
+    (``charge = 2S``) therefore converts to 2S + 1 dense states, and dense observables of the
+    result (`local_expectations`, `mps_inner`, ...) average or sum over the multiplet: <S^z>
+    comes out as 0. Index 0 of the last bond is the state with ``S^z = S``. Sliced out, it has
+    norm squared 1/(2S + 1); scale it by ``sqrt(2S + 1)``, the size of that bond, to normalise
+    it::
+
+        d = to_dense_mps(gs, sites)
+        d[-1] = d[-1][..., :1] * d[-1].shape[-1] ** 0.5      # S^z = S, norm 1
+    """
     out = []
     for t, site in zip(mps, sites):
         U = t.be.array(np.asarray(site.basis).conj().T)

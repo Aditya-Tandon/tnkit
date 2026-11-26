@@ -282,7 +282,10 @@ def test_penalty_in_a_multiplet_sector_is_that_of_one_state():
     c = chain("U1xSU2-02")
     E0, gs, _ = c.ground()
     w = 0.3 * (c.E[1] - c.E[0])
-    E, M, info = dmrg_excited(c.mpo, FULL, prev_states=[gs], charge=c.q, penalty=w, **TIGHT)
+    from tnkit.dmrg_excited import DeflationWarning
+    with pytest.warns(DeflationWarning):
+        E, M, info = dmrg_excited(c.mpo, FULL, prev_states=[gs], charge=c.q, penalty=w,
+                                  **TIGHT)
     assert abs(info["E_penalised"] - E0 - w) < 1e-12
     assert abs(info["penalty_overlaps"][0] - 1.0) < 1e-12 and abs(E - E0) < 1e-12
 

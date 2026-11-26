@@ -1,8 +1,10 @@
 """A least-recently-used map bounded by the bytes of its values."""
 from __future__ import annotations
 
+import math
 import os
 import threading
+import warnings
 from collections import Counter, OrderedDict
 from typing import Any, Callable, Dict, Hashable, Optional
 
@@ -146,9 +148,27 @@ class Growing:
             held[0]._resize(held[1], self)
 
 
-def env_cache(name: str, default_mb: float, max_entries: Optional[int] = None) -> ByteCache:
-    """A `ByteCache` of `default_mb` MiB, or of the MiB in the environment variable `name`."""
+def env_number(name: str, default: float, integer: bool = False) -> Optional[float]:
+    """The number >= 0 (an integer if `integer`) in the environment variable `name`; None when
+    it is unset. Any other value warns and gives None, so the caller keeps its default."""
     v = os.environ.get(name)
     if v is None:
+        return None
+    try:
+        x = float(v)
+    except ValueError:
+        x = math.nan
+    if not (math.isfinite(x) and x >= 0 and (x == int(x) or not integer)):
+        what = "an integer" if integer else "a number"
+        warnings.warn(f"{name}={v!r} is not {what} >= 0; using the default {default}",
+                      RuntimeWarning, stacklevel=2)
+        return None
+    return int(x) if integer else x
+
+
+def env_cache(name: str, default_mb: float, max_entries: Optional[int] = None) -> ByteCache:
+    """A `ByteCache` of `default_mb` MiB, or of the MiB in the environment variable `name`."""
+    mb = env_number(name, default_mb)
+    if mb is None:
         return ByteCache(int(default_mb * 2 ** 20), max_entries)
-    return ByteCache(int(float(v) * 2 ** 20), max_entries, "env")
+    return ByteCache(int(mb * 2 ** 20), max_entries, "env")

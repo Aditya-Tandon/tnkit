@@ -63,7 +63,28 @@ def schwinger_opsum(N: int, x: float, mu, ell=0.0, charge_penalty: float = 0.0) 
 
 
 def schwinger_mpo(N: int, x: float, mu, ell=0.0, charge_penalty: float = 0.0) -> list[np.ndarray]:
-    """MPO of W (module docstring). Width <= 5; complex128, like every `tnkit.models` builder."""
+    """MPO of the lattice Schwinger operator W = 2H/(a g^2) (see the module docstring).
+
+    Parameters
+    ----------
+    N : int
+        Number of staggered sites, >= 2; site 0 is even.
+    x : float
+        Hopping, ``1 / (g a)^2``.
+    mu : float or array of shape (N,)
+        Mass term ``2 m / (g^2 a)``, per site if an array.
+    ell : float or array of shape (N - 1,), default 0.0
+        Background field added to every link.
+    charge_penalty : float, default 0.0
+        Weight of ``Q^2``, >= 0; a positive value pushes states of nonzero total charge up.
+
+    Returns
+    -------
+    list of ndarray
+        N complex128 tensors of width <= 5, axes ``(left, right, out, in)``, in tnkit's basis
+        (index 0 is Z = +1). The hopping is written with s+ and s-, so the MPO conserves the
+        charge Q and `to_block_mpo` can reduce it under U(1).
+    """
     mpo, _ = compile_mpo(schwinger_opsum(N, x, mu, ell, charge_penalty), [spin_half()] * N,
                          max_width=5)
     return mpo

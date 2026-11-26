@@ -1,8 +1,18 @@
-# DMRG options
+# DMRG
 
-{py:func}`~tnkit.dmrg` runs DMRG, two-site by default. It takes the MPO, the bond dimension
-`chi`, and either keyword arguments or a {py:class}`~tnkit.DMRGOptions`. The defaults are a
-sound start; these are the options worth knowing.
+{py:func}`~tnkit.dmrg` finds the ground state of a finite open chain. It sweeps over the
+chain, optimising two neighbouring sites at a time by default, until the energy stops
+changing. It takes the MPO, the bond dimension `chi`, and either keyword arguments or a
+{py:class}`~tnkit.DMRGOptions`:
+
+```python
+from tnkit import dmrg, tfim_mpo
+
+E, mps, info = dmrg(tfim_mpo(32, g=1.0), chi=64, n_sweeps=10)
+```
+
+The defaults are a sound start; this page lists the options worth knowing and what `info`
+reports.
 
 ## Stopping
 
@@ -35,8 +45,8 @@ sound start; these are the options worth knowing.
 : the number of opening sweeps that use subspace expansion. Expansion adds to each bond the
   states the Hamiltonian couples to (Hubig et al., PRB 91, 155115 (2015)), so the run can leave
   a poor starting basis and fill empty charge sectors. The default, `None`, means `0` (off) on
-  a dense MPO and `min(4, n_sweeps - 2)` on a block MPO; `info["expand"]` reports the value
-  used. It must be less than `n_sweeps`, and a run with expansion does at least `expand + 2`
+  a dense MPO and `max(0, min(4, n_sweeps - 2))` on a block or symmetric MPO; `info["expand"]`
+  reports the value used. It must be less than `n_sweeps`, and a run with expansion does at least `expand + 2`
   sweeps. Expanding sweeps truncate with an exact SVD whatever `trunc` says.
 
 `expand_alpha`, `expand_decay`
@@ -48,14 +58,19 @@ can end higher than a run without it.
 
 ## Local eigensolver
 
+Each step of a sweep finds the lowest eigenvector of the effective Hamiltonian of two sites
+with a Krylov method: it builds the space spanned by $v, Hv, H^2v, \dots$ from a start vector
+$v$ (the Krylov space) and solves the small eigenproblem there.
+
 `eig`
-: `"lanczos-restart"` (default, thick-restart Lanczos), `"lanczos"`, `"lanczos-mixed"`,
+: `"lanczos-restart"` (default, thick-restart Lanczos), `"lanczos"`, `"lanczos-mixed"`
+  (Lanczos with single-precision matrix-vector products, refined in double precision),
   `"lobpcg"`, or `"scipy-host"` (scipy's `eigsh` on the host; a baseline for comparison, not
   for production).
 
 `max_iter`
-: the Krylov-space cap. The default grows with `chi`, because a fixed cap starves the local
-  solve at large bond dimension.
+: the largest dimension of the Krylov space. The default, `None`, grows with `chi`, because a
+  fixed cap starves the local solve at large bond dimension.
 
 ## Truncation and device
 
@@ -63,10 +78,13 @@ can end higher than a run without it.
 : how each two-site block is split: `"svd"` (default), `"randomized"`, `"randomized-mixed"`,
   `"cutn"` or `"gram"`. `"density"` is deprecated and warns; use `"svd"`.
 
-  `"gram"` is an opt-in exception, kept for speed on GPUs: it replaces the SVD by a
-  matrix product and an eigendecomposition of the smaller Gram matrix. It is not reproducible
-  against `"svd"`. Use it only in double precision, for energies, local observables and
-  entropies. Single precision and block tensors refuse it.
+  `"gram"` is opt-in, for speed on GPUs: it replaces the SVD by a matrix product and an
+  eigendecomposition of the smaller Gram matrix $\Theta^\dagger \Theta$ of the two-site block
+  $\Theta$. `gram` is faster on GPUs, but
+  its rounding differs from `svd`, so its results are not reproducible against `svd` runs.
+  It does not resolve singular values below about $10^{-8}$ of the largest, so do not read
+  small entanglement spectra from it. Use it only in double precision, for energies, local
+  observables and entropies; single precision and block tensors refuse it.
 
 `backend`
 : see {doc}`../getting-started/backends`.
@@ -75,7 +93,8 @@ can end higher than a run without it.
 : a starting state, or the seed of the random one.
 
 `charge`
-: block MPOs only: the total charge of the state sought. See {doc}`symmetries`.
+: block and symmetric MPOs only: the sector of the state sought, its total charge. See
+  {doc}`symmetries/index`.
 
 ## What `info` contains
 
@@ -86,14 +105,21 @@ can end higher than a run without it.
 : the energy and the wall time of every sweep.
 
 `backend`, `blocks`
-: the backend used, and whether the tensors were block-sparse.
+: the backend used, and whether the tensors were block or symmetric tensors.
+
+`eig`
+: the local eigensolver used.
 
 `discarded_weight`
 : the summed discarded weight of all truncations.
 
 `matvec_calls`, `phase_time`
-: the number of local matrix-vector products, and the time spent in the eigensolver,
-  truncation and environment updates.
+: the number of local matrix-vector products, and a dict of the seconds spent in the
+  eigensolver, the truncations and the environment updates (`eig`, `trunc`, `env`).
+
+`mixed_counts`
+: with `eig="lanczos-mixed"`, the number of matrix-vector products done in single
+  (`lo`) and in double (`hi`) precision; both are 0 for the other eigensolvers.
 
 `sites`, `expand`, `expand_alphas`
 : the sweep type, the number of expanding sweeps, and the expansion weight of every sweep
@@ -101,9 +127,9 @@ can end higher than a run without it.
 
 ## Beyond the ground state
 
-- {py:func}`~tnkit.dmrg_excited` finds excited states, one at a time, by deflating the
-  states already found (an energy penalty, or a projection).
-- {py:func}`~tnkit.idmrg` and {py:func}`~tnkit.vumps` work directly in the thermodynamic limit
-  with a uniform MPS ({py:class}`~tnkit.UniformMPS`).
-- {py:func}`~tnkit.mpo_variance` gives $\expval{H^2} - \expval{H}^2$, a check of how close a
-  state is to an eigenstate.
+- {doc}`excited-states` finds the states above the ground state.
+- {doc}`infinite-chains` works directly in the thermodynamic limit.
+- {py:func}`~tnkit.mpo_variance` returns the energy variance $\expval{H^2} - \expval{H}^2$,
+  with the round-off floor below which it is not resolved. It measures how close a state is
+  to an eigenstate: some eigenvalue of $H$ lies within the square root of the variance of
+  $\expval{H}$.

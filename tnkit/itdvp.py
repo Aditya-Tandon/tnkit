@@ -4,18 +4,16 @@ Real-time evolution directly in the thermodynamic limit. The state is a single t
 invariant tensor in mixed gauge {AL, AR, AC, C}; there are no boundaries, so there is no
 finite-size revival to out-run and no N to inflate.
 
-WHY THIS EXISTS
----------------
-Measurement of the exact free-fermion reference found the light cone directly (v_max = 2 for the
-TFIM at g=1) with a finite-size revival at t_rev = N/v_max, so every finite benchmark must take N
-large enough that t_rev exceeds the window or it is fitting boundary reflections.
-A finite-size run paid for that by running N=48 purely to push the
-revival out to t=24 for a t<=10 window -- most of those sites bought nothing but distance from the
-boundary. In the thermodynamic limit that cost disappears entirely.
+WHY
+---
+Excitations spread at most at the Lieb-Robinson speed (v_max = 2 for the TFIM at g = 1), and a
+finite chain of N sites shows a revival at about t_rev = N / v_max, so a finite run needs N
+large enough that t_rev exceeds the times of interest, or it records boundary reflections. In
+the thermodynamic limit that cost disappears.
 
-This does NOT lift the entanglement barrier. t_max is still logarithmic in chi
-(t_max = 0.920 log2 chi - 0.980); an infinite system removes finite-size artefacts, it does not let
-a fixed chi hold more entanglement, which is exactly what this scaling law predicts.
+It does not lift the entanglement barrier: the reachable time still grows only like log chi.
+An infinite system removes finite-size artefacts; it does not let a fixed chi hold more
+entanglement.
 
 THE INTEGRATOR, AND A SIGN THAT IS EASY TO GET WRONG
 ----------------------------------------------------
@@ -23,23 +21,18 @@ THE INTEGRATOR, AND A SIGN THAT IS EASY TO GET WRONG
     C  <- exp(-i dt H_C ) C          # FORWARD, not backward
     AL, AR <- polar gauge from (AC, C)
 
-Both tensors evolve FORWARD. This looks wrong by analogy with finite 1-site TDVP, where the bond
-tensor is explicitly counter-rotated (-P_bond in the projector), and that analogy was in fact
-followed here first -- incorrectly.
+Both tensors evolve forward. By analogy with finite one-site TDVP, where the bond tensor is
+explicitly evolved backward (-P_bond in the projector), this looks wrong, but it is not.
 
 The reason it differs: in this formulation the subtraction is carried by the GAUGE EXTRACTION, not
 by the bond time step. AL is recovered as argmin ||AC - AL C||, i.e. AL ~ AC C^-1, so evolving both
 factors forward and then dividing already realises the difference of the two generators. Counter-
 rotating C as well applies the subtraction twice.
 
-Measured, g: 2 -> 1 quench at chi=16, dt=0.05, against exact free fermions:
-
-    C forward  (-i dt):  err ~5e-7, FLAT;         gauge error eps ~1.2e-6, flat
-    C backward (+i dt):  err -> 1.2e-1 by t=0.3;  gauge error eps -> 0.575, growing
-
-The observable alone is ambiguous early on (both agree to 4e-7 after one step). The decisive
-diagnostic is the GAUGE ERROR eps = ||AC - AL C||: with the wrong sign the state stops being a
-consistent uniform MPS and eps diverges, while norm and energy still look plausible.
+With the wrong sign the state stops being a consistent uniform MPS: the gauge error
+eps = ||AC - AL C|| grows without bound while the norm and energy still look plausible, and
+the observables drift away from the exact result after a few steps. eps is the diagnostic to
+watch.
 """
 from __future__ import annotations
 
@@ -102,42 +95,24 @@ def _itdvp_sub(AL, AR, AC, C, W, dt, be, env_tol, m_krylov, FL=None, FR=None):
 
 
 def itdvp_step(AL, AR, AC, C, W, dt, be, env_tol=1e-10, m_krylov=30, order=1):
-    """One step of uniform TDVP. Returns (AL, AR, AC, C, eps).
+    """One first-order step of uniform TDVP. Returns (AL, AR, AC, C, eps).
 
-    order=1  environments computed once from the current state and held frozen across the step.
-    order=2  MIDPOINT rule: half-step to a provisional midpoint, recompute the environments THERE,
-             then take a full step from the ORIGINAL tensors using the midpoint environments.
-
-    Why the midpoint and not a Strang splitting of the two exponentials: AC and C are evolved from
-    the same starting state with the SAME environments, so the two exponentials do not interact and
-    swapping their order is a no-op. An earlier attempt did exactly that and measured a "second
-    order" scheme whose output was bit-identical to order=1 at half the step -- because that is all
-    it was. The genuine O(dt) error in this scheme comes from FREEZING FL and FR over the step, so
-    that is what has to be centred.
-
-    Note that this check is only meaningful in a regime where the
-    gauge error is subdominant; the first run of it was gauge-dominated (err/eps_gauge ~ 1.4 at
-    every dt) and therefore could not resolve the splitting order at all.
+    The environments are computed once from the current state and held fixed across the step;
+    that freezing is the source of the O(dt) error. ``order=2`` raises `NotImplementedError`:
+    swapping the order of the AC and C exponentials changes nothing (both start from the same
+    tensors with the same environments), and recomputing FL/FR at a midpoint and applying them
+    to the original tensors mixes gauges, since environments belong to a particular AL/AR.
     """
     if order == 1:
         return _itdvp_sub(AL, AR, AC, C, W, dt, be, env_tol, m_krylov)
     if order == 2:
         raise NotImplementedError(
-            "order=2 is REFUTED, not merely unimplemented. Three things were established and are "
-            "kept here so the next attempt does not repeat them:\n"
-            "  (1) Swapping the AC and C exponentials is a NO-OP. Both are evolved from the same "
-            "starting tensors with the same frozen environments, so they do not interact. The "
-            "'symmetric' scheme built that way produced output BIT-IDENTICAL to order=1 at half "
-            "the step (err 3.527e-06 at dt=0.1 vs order=1 at dt=0.05, to all digits).\n"
-            "  (2) The genuine O(dt) error is in FREEZING FL/FR across the step, not in the "
-            "splitting -- so that is what a second-order scheme must centre.\n"
-            "  (3) A midpoint rule that recomputes FL/FR at the midpoint and applies them to the "
-            "ORIGINAL tensors is WRONG: environments are gauge-dependent objects tied to specific "
-            "AL/AR, so this mixes gauges. Measured, it made things worse -- err 7.878e-05 vs "
-            "1.596e-05 and the gauge error eps jumped 13x, from 1.10e-05 to 1.42e-04.\n"
-            "A correct scheme must centre the environment freezing WITHOUT mixing gauges, e.g. by "
-            "gauge-transforming the midpoint environments back, or by a scheme that never leaves "
-            "one gauge.")
+            "order=2 is not implemented. Swapping the AC and C exponentials is a no-op (both "
+            "start from the same tensors with the same frozen environments), and the O(dt) error "
+            "comes from freezing FL/FR across the step. Recomputing FL/FR at a midpoint and "
+            "applying them to the original tensors mixes gauges, since environments belong to a "
+            "particular AL/AR. A second-order scheme must centre the environments without mixing "
+            "gauges.")
     raise ValueError(f"itdvp_step: order must be 1 or 2, got {order}")
 
 

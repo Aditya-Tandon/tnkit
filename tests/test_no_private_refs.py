@@ -5,7 +5,8 @@ The built-in checks are generic. A terms file adds more: one regular expression 
 case-insensitive, `#` lines are comments. A line starting `prose:` applies only to prose: text
 files, comments, string literals and JSON strings that contain a space, and Julia docstrings.
 Code identifiers and data keys are therefore not flagged. A line starting `docs:` applies only
-to text files. The terms file is `release/private_terms.txt` when present, or `--extra FILE`:
+to text files, and one starting `code:` only to the prose of the package itself (`tnkit/`). The
+terms file is `release/private_terms.txt` when present, or `--extra FILE`:
 
     python tests/test_no_private_refs.py [ROOT] [--extra FILE]
 
@@ -54,14 +55,15 @@ def bad_email(line):
 
 
 def load_terms(path):
-    """Regex lists from a terms file: {"": anywhere, "prose": prose only, "docs": text files}."""
-    out = {"": [], "prose": [], "docs": []}
+    """Regex lists from a terms file: {"": anywhere, "prose": prose only, "docs": text files,
+    "code": prose in the package}."""
+    out = {"": [], "prose": [], "docs": [], "code": []}
     for line in open(path, encoding="utf-8"):
         line = line.strip()
         if not line or line.startswith("#"):
             continue
         kind, sep, rest = line.partition(":")
-        if sep and kind in ("prose", "docs"):
+        if sep and kind in ("prose", "docs", "code"):
             out[kind].append(rest.strip())
         else:
             out[""].append(line)
@@ -69,10 +71,12 @@ def load_terms(path):
 
 
 def patterns(extra=None):
-    """Compiled (anywhere, prose-only, docs-only) patterns: the generic ones plus the terms file."""
-    terms = load_terms(extra) if extra else {"": [], "prose": [], "docs": []}
+    """Compiled (anywhere, prose-only, docs-only, package-prose) patterns: the generic ones plus
+    the terms file."""
+    terms = load_terms(extra) if extra else {"": [], "prose": [], "docs": [], "code": []}
     join = lambda ps: re.compile("|".join(f"(?:{p})" for p in ps), re.IGNORECASE) if ps else None
-    return join(GENERIC + terms[""]), join(terms["prose"]), join(terms["docs"])
+    return (join(GENERIC + terms[""]), join(terms["prose"]), join(terms["docs"]),
+            join(terms["code"]))
 
 
 def default_extra(root):
@@ -178,8 +182,14 @@ def jl_prose(lines):
     return out
 
 
-def hits(path, pats=None):
-    anywhere, prose, docs = pats or patterns(default_extra(ROOT))
+PACKAGE = "tnkit/"
+
+
+def hits(path, pats=None, rel=None):
+    """Hits in the file `path`; `rel` is the path it ships as (default: relative to ROOT)."""
+    anywhere, prose, docs, code = pats or patterns(default_extra(ROOT))
+    rel = (os.path.relpath(path, ROOT) if rel is None else rel).replace(os.sep, "/")
+    code = code if rel.startswith(PACKAGE) else None
     ext = ".toml" if os.path.basename(path) == "uv.lock" else os.path.splitext(path)[1]
     with open(path, encoding="utf-8", errors="replace") as fh:
         text = fh.read()
@@ -203,6 +213,7 @@ def hits(path, pats=None):
         bad = bad or bad_email(line)
         bad = bad or (prose is not None and n in prose_of and prose.search(prose_of[n]))
         bad = bad or (docs is not None and ext in PROSE_FILES and docs.search(line))
+        bad = bad or (code is not None and n in prose_of and code.search(prose_of[n]))
         if bad:
             out.append(f"{n}: {line.strip()[:100]}")
     return out
@@ -211,7 +222,13 @@ def hits(path, pats=None):
 def scan(root, extra):
     pats = patterns(extra)
     files = list(shipped(root))
-    return files, [(os.path.relpath(p, root), h) for p in files for h in hits(p, pats)]
+    return files, [(os.path.relpath(p, root), h) for p in files
+                   for h in hits(p, pats, _ships_as(p, root))]
+
+
+def _ships_as(path, root):
+    rel = os.path.relpath(path, root).replace(os.sep, "/")
+    return rel[len(OVERLAY):] if rel.startswith(OVERLAY) else rel
 
 
 def test_shipped_files_exist():
@@ -242,6 +259,35 @@ def test_fallback_walk_skips_venv(tmp_path, monkeypatch):
     monkeypatch.setattr(sys.modules[__name__], "tracked", lambda root: None)
     files, bad = scan(str(tmp_path), None)
     assert [os.path.basename(p) for p in files] == ["a.txt"] and not bad
+
+
+def test_code_terms_apply_to_the_package_only(tmp_path, monkeypatch):
+    (tmp_path / "tnkit").mkdir()
+    (tmp_path / "tests").mkdir()
+    for f in ("tnkit/a.py", "tests/a.py"):
+        (tmp_path / f).write_text("x = 1  # an A/B comparison\nab = 2\n")
+    (tmp_path / "terms.txt").write_text("code:\\bA/B\\b\n")
+    monkeypatch.setattr(sys.modules[__name__], "tracked", lambda root: None)
+    _, bad = scan(str(tmp_path), str(tmp_path / "terms.txt"))
+    assert [(p.replace(os.sep, "/"), h.split(":")[0]) for p, h in bad] == [("tnkit/a.py", "1")]
+
+
+def test_release_code_terms_spare_physics(tmp_path, monkeypatch):
+    """The `code:` terms of the private list catch research-history wording, not physics."""
+    terms = os.path.join(ROOT, "release", "terms.txt")
+    if not os.path.isfile(terms):
+        pytest.skip("no private terms list in this tree")
+    (tmp_path / "tnkit").mkdir()
+    fine = ["Schwinger pair production", "two wave packets meet in a collision",
+            "a hash collision", "the left arm of the ladder", "an ARM build",
+            "migration of the centre", "the default production of states"]
+    (tmp_path / "tnkit" / "ok.py").write_text("".join(f"# {t}\n" for t in fine))
+    (tmp_path / "tnkit" / "bad.py").write_text(
+        "# as in the thesis\n# an A/B arm\n# on a MIG slice\n# a production run\n")
+    monkeypatch.setattr(sys.modules[__name__], "tracked", lambda root: None)
+    _, bad = scan(str(tmp_path), terms)
+    assert sorted((p.replace(os.sep, "/"), h.split(":")[0]) for p, h in bad) == [
+        ("tnkit/bad.py", n) for n in "1234"]
 
 
 def test_no_private_references():

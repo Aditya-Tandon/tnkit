@@ -297,6 +297,42 @@ def test_idmrg_energy_density_gapped():
         assert abs(e0 - ex) < 1e-3, f"iDMRG e0 at g={g}: {abs(e0-ex)}"
 
 
+def test_idmrg_correlation_length_off_critical():
+    """xi of the paramagnet is 1/ln g; an MPS at modest chi comes out a few percent short, and
+    agrees with VUMPS at the same chi."""
+    from tnkit.idmrg import idmrg
+    from tnkit.vumps import vumps
+    for g in (1.5, 3.0):
+        xi, exact = idmrg(g, chi=16)["xi"], 1.0 / np.log(g)
+        assert 0.95 * exact < xi < exact, (g, xi, exact)
+        assert abs(xi - vumps(g, 16)["xi"]) < 1e-2 * exact, g
+
+
+def test_vumps_refuses_other_local_dimensions():
+    import pytest
+    from tnkit.vumps import vumps
+    W = np.zeros((2, 2, 3, 3), dtype=complex)
+    with pytest.raises(ValueError, match=r"d = 2 \(spin-1/2\) only; .*d = 3"):
+        vumps(1.0, 4, mpo=W, bond_h=np.zeros((3,) * 4))
+
+
+def test_dmrg_excited_warns_when_it_refinds_a_previous_state():
+    """At g = 1.5 the gap above the ground state exceeds the default penalty of 1, so the
+    deflated solve returns the ground state again; the warning says so."""
+    import warnings
+    import pytest
+    from tnkit.dmrg_excited import DeflationWarning, dmrg_excited
+    W = M.tfim_mpo(10, 1.5)
+    _, gs, _ = dmrg(W, 16)
+    with pytest.warns(DeflationWarning, match="penalty .* below the gap"):
+        _, _, info = dmrg_excited(W, 16, prev_states=[gs])
+    assert info["penalty_overlaps"][0] ** 2 > 0.99
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeflationWarning)
+        _, _, info = dmrg_excited(W, 16, prev_states=[gs], penalty=10.0)
+    assert info["penalty_overlaps"][0] < 1e-6
+
+
 def test_vumps_energy_density_vs_exact():
     # VUMPS is variationally optimal on the uniform manifold, so its thermodynamic-limit
     # energy density must hit the exact free-fermion value to ~machine precision at the
@@ -446,18 +482,16 @@ def test_dmrg_reorth_modes_agree():
     for mode in ["full", "none"]:
         E, _, _ = dmrg(M.tfim_mpo(10, 1.0), chi=16, n_sweeps=14, tol=1e-12, reorth=mode)
         assert abs(E - ref) < 1e-9, f"reorth={mode}"
-    # reorth="periodic" is REFUTED: it loses basis
-    # orthogonality on the long local solves that appear at chi >= 64 near criticality, giving a
-    # ghost eigenpair and dE ~ 1-2 (no ground state). It is NOT tested for agreement any more --
-    # it is tested for being REJECTED with the residual stopping rule, and for warning otherwise.
+    # reorth="periodic" loses basis orthogonality on the long local solves at large chi near
+    # criticality, so it is refused with the residual stopping rule and warns otherwise.
     import warnings as _w
     import pytest as _pt
-    with _pt.raises(ValueError, match="refuted"):
+    with _pt.raises(ValueError, match="is not supported"):
         dmrg(M.tfim_mpo(10, 1.0), chi=16, n_sweeps=2, reorth="periodic", eig_stop="residual")
     with _w.catch_warnings(record=True) as rec:
         _w.simplefilter("always")
         dmrg(M.tfim_mpo(10, 1.0), chi=16, n_sweeps=2, reorth="periodic", eig_stop="energy")
-        assert any("refuted" in str(x.message) for x in rec), "periodic should warn"
+        assert any("loses orthogonality" in str(x.message) for x in rec), "periodic should warn"
 
 
 def test_free_fermion_vs_exact_diag():

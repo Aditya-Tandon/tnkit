@@ -145,7 +145,7 @@ _GROUPS = [
     ("Models", ("tnkit.models", "tnkit.models_lgt")),
     ("Observables", ("tnkit.observables",)),
     ("Backends", ("tnkit.backend",)),
-    ("Block-sparse tensors and symmetries (provisional)",
+    ("Block tensors and symmetries (provisional)",
      ("tnkit.blocks", "tnkit.block_backend", "tnkit.symmetry")),
 ]
 _NAME_GROUP = {"random_mps": "States", "right_canonicalize": "States",
@@ -162,7 +162,7 @@ _PROVISIONAL_SYMMETRIC = (".. warning::", "",
                           "change before 1.0.", "")
 # (file name, title, modules, provisional warning or None)
 _MODULE_PAGES = [
-    ("blocks", "Block-sparse tensors",
+    ("blocks", "Block tensors",
      ("tnkit.blocks", "tnkit.block_backend", "tnkit.block_graph", "tnkit.block_lanczos"),
      _PROVISIONAL),
     ("symmetric", "Symmetric tensors",

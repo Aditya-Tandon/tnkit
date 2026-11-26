@@ -190,6 +190,28 @@ def test_phased_charge_is_not_dropped(sym):
         assert _err(permute(t, p1, p2).to_dense(), x.transpose(p1 + p2)) < TOL
 
 
+@dataclass(frozen=True)
+class SpinFirst(ProductSymmetry):
+    """U(1) x SU(2) with its sectors sorted by spin first."""
+
+    def sort_key(self, a):
+        return tuple(f.sort_key(x) for f, x in zip(self.factors[::-1], a[::-1]))
+
+
+def test_a_reordered_product_still_shares_one_matrix_per_spin():
+    """The dropped factor fuses uniquely, so it fixes its labels on every tree whatever the
+    order of the sectors: the matrices on the spins alone stay exact."""
+    sym = SpinFirst((U1(), SU2()))
+    assert rc.recoupling_part(sym)[0] == SU2()
+    A, B, C = (_space(sym, d) for d in _legs("U1xSU2"))
+    rng = np.random.default_rng(5)
+    t = random((A, B, C.dual()), (A,), NP, rng, sym=sym)
+    x = t.to_dense()
+    for _ in range(6):
+        p1, p2 = _random_split(rng, 4)
+        assert _err(permute(t, p1, p2).to_dense(), x.transpose(p1 + p2)) < TOL
+
+
 # --------------------------------------------------------------------------- restricted layouts
 def _full(sym, cod, dom):
     """Sectors, block shapes and per-sector trees of the layout, from unrestricted trees."""

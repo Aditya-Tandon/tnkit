@@ -1,6 +1,8 @@
 """`tnkit.blocks`: block-sparse U(1) tensors agree with their dense arrays to round-off."""
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import numpy as np
 import pytest
 from scipy.linalg import expm
@@ -13,7 +15,7 @@ from tnkit.batch_tdvp import _ranks_from_spectrum
 from tnkit.eigensolver import lanczos_expm
 from tnkit.legs import FuseRecord, fuse, split
 from tnkit.models_lgt import schwinger_mpo
-from tnkit.symmetry import U1
+from tnkit.symmetry import Symmetry, U1
 
 BACKENDS = ["numpy"]
 try:
@@ -674,3 +676,55 @@ def test_truncation_bucketing_and_split(spec):
     ref = B.tensordot(split(U1, rec, be, legs=(0,)), split(Vh1.scale(S1, 0), rec, be, legs=(1,)),
                       ((2,), (0,)))
     assert np.abs(_np(be, got.to_dense()) - _np(be, ref.to_dense())).max() <= 1e-12
+
+
+@dataclass(frozen=True)
+class _Parities(Symmetry):
+    """Packed parities: the bits of an integer, each adding modulo 2."""
+    fusion = "unique"
+
+    def unit(self):
+        return 0
+
+    def dual(self, a):
+        return a
+
+    def fuse(self, a, b):
+        return a ^ b
+
+    def label(self, a):
+        return int(a)
+
+
+@pytest.mark.parametrize("seed", range(16))
+def test_allowed_blocks_match_the_full_product(seed):
+    """The pruned enumeration of allowed blocks equals filtering every sector tuple, in order,
+    from no legs to five."""
+    import itertools
+    from tnkit.symmetry import ProductSymmetry, Zn
+    rng = np.random.default_rng(seed)
+    sym, pick = [(U1(), lambda: int(rng.integers(-3, 4))),
+                 (Zn(3), lambda: int(rng.integers(0, 3))),
+                 (ProductSymmetry((U1(), Zn(2))),
+                  lambda: (int(rng.integers(-2, 3)), int(rng.integers(0, 2)))),
+                 (_Parities(), lambda: int(rng.integers(0, 64)))][seed % 4]
+    for _ in range(20):
+        labels = []
+        for _ in range(int(rng.integers(0, 6))):
+            cs = sorted({sym.label(pick()) for _ in range(int(rng.integers(1, 7)))},
+                        key=sym.sort_key)
+            labels.append((tuple(cs), int(rng.choice([-1, 1]))))
+        for charge in (sym.unit(), sym.label(pick())):
+            want = tuple(b for b in itertools.product(*(range(len(c)) for c, _ in labels))
+                         if sym.total([c[s] for (c, _), s in zip(labels, b)],
+                                      [g for _, g in labels]) == charge)
+            got, arr = B._allowed(tuple(labels), charge, sym)
+            assert got == want and arr.shape == (len(want), len(labels))
+
+
+def test_charged_scalar_has_no_blocks():
+    """A tensor with no legs holds its one element only in the trivial sector."""
+    t, lost = B.from_dense(np.array(5.0), (), charge=1)
+    assert t.struct.blocks == () and lost == 25.0 and t.to_dense() == 0.0
+    t, lost = B.from_dense(np.array(5.0), ())
+    assert t.struct.blocks == ((),) and lost == 0.0 and t.to_dense() == 5.0

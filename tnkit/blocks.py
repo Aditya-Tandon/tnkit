@@ -62,6 +62,7 @@ from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from ._bytecache import env_number
 from .legs import FuseRecord
 from .symmetry import Symmetry, U1
 
@@ -72,6 +73,7 @@ _META_CACHE = 4096                     # interned structs and records: host meta
 _U1 = U1()
 _HOST_EXPAND_MAX = 1 << 17             # indices up to this many elements expand on the host
 _PIN_MAX_BYTES = 8 * _HOST_EXPAND_MAX  # largest pinned upload (bytes): a host-expanded int64 index
+_EXPAND_SLICE = 1 << 22                # positions computed at once when an index is expanded
 
 
 @dataclass(frozen=True)
@@ -217,10 +219,24 @@ def _block_shapes(legs: Sequence[Leg], sec: np.ndarray) -> np.ndarray:
 
 @lru_cache(maxsize=_META_CACHE)
 def _allowed(labels, charge, sym: Symmetry):
-    """Every allowed block, in lexicographic sector order, and the same as an int array."""
-    blocks = tuple(b for b in itertools.product(*(range(len(c)) for c, _ in labels))
-                   if sym.total([c[s] for (c, _), s in zip(labels, b)],
-                                [sg for _, sg in labels]) == charge)
+    """Every allowed block, in lexicographic sector order, and the same as an int array. Blocks are
+    grown one leg at a time, keeping only prefixes whose remaining charge the later legs can still
+    supply; the sector of the last leg is then looked up. The work follows the prefixes kept and
+    the totals the later legs can reach, rather than the number of all sector tuples."""
+    lab = [[c if sg > 0 else sym.dual(c) for c in cs] for cs, sg in labels]
+    if not lab:
+        blocks = ((),) if charge == sym.unit() else ()
+        return blocks, np.zeros((len(blocks), 0), dtype=np.int64)
+    later = [set(lab[-1])]                  # later[j]: totals the legs after j can supply
+    for cs in reversed(lab[1:-1]):
+        later.append({sym.fuse(c, r) for c in set(cs) for r in later[-1]})
+    later.reverse()
+    front = [((), sym.unit())]
+    for j, cs in enumerate(lab[:-1]):
+        front = [(b + (k,), q) for b, p in front for k, q in enumerate(sym.fuse(p, c) for c in cs)
+                 if sym.fuse(sym.dual(q), charge) in later[j]]
+    last = {c: k for k, c in enumerate(lab[-1])}
+    blocks = tuple(b + (last[c],) for b, p in front if (c := sym.fuse(sym.dual(p), charge)) in last)
     return blocks, np.array(blocks, dtype=np.int64).reshape(len(blocks), len(labels))
 
 
@@ -313,6 +329,37 @@ def _upload(h: np.ndarray, device):
     return t.to(device)
 
 
+def _split_runs(runs: np.ndarray, m: int) -> np.ndarray:
+    """`runs` (rows src, sstep, length[, dst, dstep]) with every run longer than `m` cut into runs
+    of at most `m` positions, in order."""
+    k = -(-runs[2] // m)
+    if (k == 1).all():
+        return runs
+    which = np.repeat(np.arange(runs.shape[1]), k)
+    j = np.arange(which.size) - np.repeat(np.cumsum(k) - k, k)
+    out = runs[:, which].copy()
+    out[0] += j * m * out[1]
+    out[2] = np.minimum(m, out[2] - j * m)
+    if len(runs) == 5:
+        out[3] += j * m * out[4]
+    return out
+
+
+def _slices(length: np.ndarray, n: int, m: int):
+    """(first run, end run, first position, positions) of consecutive groups of runs of `length`
+    (n positions in all, no run longer than `m`) holding at most `m` positions each."""
+    if n <= m:
+        yield 0, length.size, 0, n
+        return
+    ends = np.cumsum(length)
+    a = 0
+    while a < length.size:
+        base = int(ends[a] - length[a])
+        b = max(a + 1, int(np.searchsorted(ends, base + m, side="right")))
+        yield a, b, base, int(ends[b - 1]) - base
+        a = b
+
+
 class _Index:
     """A gather index on the host (int32 when it fits), plus its copy on each device it has been
     used on. Built either from explicit position arrays or from runs. Runs are expanded on first
@@ -354,27 +401,38 @@ class _Index:
         return n + sum(d.element_size() * d.numel() for d in self._dev.values())
 
     def _expand(self, xp, device=None):
-        """Every position of the runs, computed with `xp` (numpy, or torch on `device`)."""
-        unit = bool((self._runs[1] == 1).all())
+        """Every position of the runs, computed with `xp` (numpy, or torch on `device`) in slices
+        of at most `_EXPAND_SLICE` positions, so that the int64 temporaries (and, on a device, the
+        uploaded runs) stay bounded whatever the size of the index; written into one int32 (when
+        it fits) or int64 array."""
+        runs = self._runs if self.n <= _EXPAND_SLICE else _split_runs(self._runs, _EXPAND_SLICE)
+        dtype = np.int32 if self._small else np.int64
         if xp is np:
-            r = self._runs
-            rep = lambda v: np.repeat(v, r[2])
-            ar = np.arange(self.n, dtype=np.int64)
+            out = np.empty(self.n, dtype)
+            put = lambda h: h
+            rep = lambda v, k, n: np.repeat(v, k)
+            arange = lambda n: np.arange(n, dtype=np.int64)
         else:
-            r = _upload(self._runs, device)
-            rep = lambda v: xp.repeat_interleave(v, r[2], output_size=self.n)
-            ar = xp.arange(self.n, dtype=xp.int64, device=device)
-        first = xp.cumsum(r[2], 0) - r[2]
-        if len(r) == 3:
-            idx = rep(r[0] - first) + ar if unit else rep(r[0] - first * r[1]) + ar * rep(r[1])
-        else:
-            rid = rep(xp.arange(r.shape[1]) if xp is np else xp.arange(r.shape[1], device=device))
-            local = ar - first[rid]
-            idx = xp.empty_like(ar)
-            idx[r[3][rid] + local * r[4][rid]] = r[0][rid] + local * r[1][rid]
-        if not self._small:
-            return idx
-        return idx.astype(np.int32) if xp is np else idx.to(xp.int32)
+            out = xp.empty(self.n, dtype=getattr(xp, np.dtype(dtype).name), device=device)
+            put = lambda h: _upload(np.ascontiguousarray(h), device)
+            rep = lambda v, k, n: xp.repeat_interleave(v, k, output_size=n)
+            arange = lambda n: xp.arange(n, dtype=xp.int64, device=device)
+        unit = bool((runs[1] == 1).all())
+        for a, b, base, n in _slices(runs[2], self.n, _EXPAND_SLICE):
+            r = put(runs[:, a:b])
+            first = xp.cumsum(r[2], 0) - r[2]  # start of each run within the slice
+            ar = arange(n)
+            if len(r) == 3:                    # sorted by destination: one contiguous slice
+                if not unit:
+                    ar *= rep(r[1], r[2], n)
+                ar += rep(r[0] - first * r[1], r[2], n)
+                out[base:base + n] = ar
+            else:
+                rid = rep(arange(b - a), r[2], n)
+                local = ar - first[rid]
+                vals = r[0][rid] + local * r[1][rid]
+                out[r[3][rid] + local * r[4][rid]] = vals if xp is np else vals.to(out.dtype)
+        return out
 
     def _account(self, nbytes: int, t0: float, c0: float):
         dt, stats = time.perf_counter() - t0, _INDEX_CACHE.stats
@@ -533,10 +591,10 @@ def _device_memory(device) -> int:
 
 
 def _env_cache(name: str, default_mb: int) -> _IndexCache:
-    v = os.environ.get(name)
-    if v is None:
+    mb = env_number(name, default_mb)
+    if mb is None:
         return _IndexCache(default_mb * 2 ** 20, "default-host")
-    return _IndexCache(int(float(v) * 2 ** 20), "env")
+    return _IndexCache(int(mb * 2 ** 20), "env")
 
 
 _DEFAULT_MB, _DEVICE_FRACTION = 4096, 0.3

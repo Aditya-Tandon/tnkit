@@ -59,9 +59,12 @@ import numpy as np
 
 from . import _recoupling, _symmetric_layout
 from ._bytecache import Growing, env_cache, nbytes
-from ._recoupling import RECOUPLING_CACHE, Gather, Recoupler
-from ._symmetric_layout import (DEVICE_INDEX_CACHE, INDEX_CACHE, RECENT_LAYOUTS, STRUCTURE_CACHE,
-                                Layout, Side, Target, backend_key, layout, to_index)
+from ._recoupling import Gather, Recoupler
+from ._symmetric_layout import Layout, Side, Target, backend_key, layout, to_index
+# the caches named above, re-exported so that they can be inspected or resized from here
+from ._recoupling import PERMUTE_CACHE, RECOUPLING_CACHE  # noqa: F401
+from ._symmetric_layout import (DEVICE_INDEX_CACHE, INDEX_CACHE, RECENT_LAYOUTS,  # noqa: F401
+                                STRUCTURE_CACHE)
 from .backend import NumpyBackend
 from .legs import FuseRecord
 from .fusion_trees import TREE_CACHE, FusionTree, tree_tensor
@@ -92,13 +95,12 @@ class Space:
     isdual: bool = False
 
     def __post_init__(self):
-        object.__setattr__(self, "sectors", tuple(self.sectors))
+        object.__setattr__(self, "sectors", tuple(self.sym.label(a) for a in self.sectors))
         object.__setattr__(self, "degeneracies", tuple(int(n) for n in self.degeneracies))
         object.__setattr__(self, "isdual", bool(self.isdual))
         if (list(self.sectors) != sorted(set(self.sectors), key=self.sym.sort_key)
                 or len(self.degeneracies) != len(self.sectors)
-                or any(n < 1 for n in self.degeneracies)
-                or any(self.sym.label(a) != a for a in self.sectors)):
+                or any(n < 1 for n in self.degeneracies)):
             raise ValueError(f"invalid space {self}")
 
     @cached_property
@@ -159,6 +161,14 @@ def _sym_of(spaces, sym):
         raise ValueError("the spaces need one common symmetry (pass `sym` for a tensor "
                          "without legs)")
     return syms.pop()
+
+
+def _backend_for(be, dtype):
+    """`be`, or a backend of its class and device for data of `dtype` (``t * 1j`` on a real
+    backend gives a complex tensor on a complex backend)."""
+    if be.is_torch:
+        return be if dtype == be.dtype else type(be)(be.device, dtype)
+    return be if np.dtype(dtype) == np.dtype(be.dtype) else type(be)(dtype=np.dtype(dtype))
 
 
 # --------------------------------------------------------------------------- the tensor
@@ -228,7 +238,7 @@ class SymmetricTensor:
 
     # --- vector algebra on the flat buffer ---
     def _like(self, data) -> "SymmetricTensor":
-        return SymmetricTensor._of(self.layout, data, self.be)
+        return SymmetricTensor._of(self.layout, data, _backend_for(self.be, data.dtype))
 
     def _check(self, other):
         if not isinstance(other, SymmetricTensor):
