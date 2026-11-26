@@ -352,7 +352,7 @@ def _cast(be, M, dtype):
         want = real_dtype(want)
     if np.iscomplexobj(M) and want.kind != "c":
         if not _negligible_imag(M)[0]:
-            raise TypeError("a real tensor needs a complex recoupling matrix")
+            raise TypeError("a complex recoupling matrix needs complex data, not a real dtype")
         M = M.real
     h = np.ascontiguousarray(M, want)
     if not be.is_torch:

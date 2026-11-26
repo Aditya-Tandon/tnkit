@@ -1,26 +1,20 @@
-"""Infinite DMRG (iDMRG) — thermodynamic-limit ground state via a growing 2-site
-unit cell. Reuses the matrix-free Lanczos + MPO environment machinery, so it is
-backend-agnostic like the finite kernel.
+"""Infinite DMRG (iDMRG): a thermodynamic-limit ground state from a growing two-site cell.
 
-Why: the thermodynamic limit is the *only* clean setting for finite-entanglement
-scaling. On a finite chain the half-chain entropy is capped by min[(c/6)ln N,
-(cκ/6)ln χ], so the χ-limited (FES) branch is only visible for N > χ^κ ≈ χ² — which
-means huge N (→ overflow in the length-N canonicalisation, and cost). iDMRG has no
-system size: the fixed-point iMPS at bond χ directly realises ξ(χ)~χ^κ and
-S(χ)~(cκ/6)ln χ.
+It uses the matrix-free Lanczos and the MPO environments of the finite kernel, so it runs on
+any backend. With no system size, the fixed point at bond dimension chi shows
+finite-entanglement scaling directly: xi(chi) ~ chi^kappa and S(chi) ~ (c kappa / 6) ln chi.
+On a finite chain the chi-limited branch is visible only for N above about chi^kappa.
 
-Algorithm (infinite-system DMRG, White): grow the chain two sites per step by
-inserting a 2-site block in the middle, solving its ground state against the
-accumulated left/right half-chain environments, truncating to χ, and folding the
-new tensors into the environments. The per-site energy e = (E_n − E_{n−1})/2
-converges to e₀; the central Schmidt spectrum converges to the bulk fixed point.
+Algorithm (infinite-system DMRG, White): grow the chain by two sites per step, inserting a
+two-site block in the middle, solving its ground state against the accumulated left and right
+environments, cutting it to chi, and folding the new tensors into the environments. The energy
+per site e = (E_n - E_{n-1})/2 converges to e0, and the central Schmidt spectrum to the bulk
+fixed point.
 
-Accuracy note: pure-growth infinite-system DMRG reaches the bulk fixed point
-accurately in the **gapped** phase (validated: e₀ to ~1e-4 at χ=24), but converges
-slowly and sub-optimally **at criticality** (the environments and unit cell
-co-converge without a wavefunction transformation). So it gives the *qualitative*
-finite-entanglement scaling (S grows ~log χ) but not a clean quantitative c/κ — that
-needs a variationally-optimal iMPS (VUMPS or McCulloch iDMRG).
+Accuracy: pure-growth infinite-system DMRG reaches the bulk fixed point in a gapped phase, but
+converges slowly and not variationally at a critical point (the environments and the cell
+converge together, without a wavefunction transformation). There it gives the qualitative
+scaling (S grows like log chi) but not clean values of c or kappa; use `vumps` for those.
 """
 from __future__ import annotations
 import dataclasses
@@ -37,7 +31,7 @@ from . import _options
 
 
 def tfim_bulk_mpo(g):
-    """Bulk (translation-invariant) TFIM MPO tensor, same 3×3 automaton as tfim_mpo."""
+    """The bulk TFIM MPO tensor ``(3, 3, 2, 2)``, the automaton of `tfim_mpo` at h = 0."""
     W = np.zeros((3, 3, 2, 2), dtype=np.complex128)
     W[0, 0] = I2; W[0, 1] = SX; W[0, 2] = -g * SZ; W[1, 2] = -SX; W[2, 2] = I2
     return W
@@ -49,19 +43,50 @@ def _entropy(svals):
     return float(-np.sum(p * np.log(p)))
 
 
-def _xi_from_tensor(A):
-    """Correlation length from the transfer matrix of a bulk tensor A=(a,s,b)."""
+def _xi_from_tensor(A, sites=1):
+    """Correlation length, in sites, from the transfer matrix sum_s A_s (x) conj(A_s) of a
+    uniform tensor A = (a, s, b) on one bond basis (a == b) covering `sites` sites."""
     a, s, b = A.shape
-    T = np.einsum("asb,ASB->aAbB", A, A.conj()).reshape(a * a, b * b)
+    T = np.einsum("asb,AsB->aAbB", A, A.conj()).reshape(a * a, b * b)
     ev = np.abs(np.linalg.eigvals(T)); ev.sort(); ev = ev[::-1]
     if ev.size < 2 or ev[1] <= 0:
         return np.nan
-    return -1.0 / np.log(ev[1] / ev[0])
+    return -sites / np.log(ev[1] / ev[0])
+
+
+def _xi_from_cell(A, svals, B, svals_prev, rcond=1e-12):
+    """Correlation length of the iDMRG fixed point, in sites, from its two-site cell.
+
+    `A` (left-canonical) and `B` (right-canonical) map the previous step's centre bond, with
+    Schmidt values `svals_prev`, to the new one (`svals`) and back, so A and B alone are not on
+    one bond basis. The cell Λ_prev^{-1} A Λ B (Vidal's Γ Λ Γ Λ) is: its transfer matrix has
+    the state's spectrum. Schmidt values below `rcond` of the largest are dropped before the
+    inverse."""
+    keep = svals_prev > rcond * svals_prev[0]
+    th = np.einsum("asb,b,btc->astc", A, svals, B)[keep][..., keep]
+    cell = (th / svals_prev[keep][:, None, None, None]).reshape(int(keep.sum()), -1,
+                                                                int(keep.sum()))
+    return _xi_from_tensor(cell, sites=2)
 
 
 @dataclasses.dataclass
 class IDMRGOptions:
-    """Settings of `idmrg`, with the defaults of its old flat signature."""
+    """Settings of `idmrg`, apart from the model and `chi`.
+
+    Parameters
+    ----------
+    n_iter : int, default 400
+        Maximum number of growth steps (two sites each).
+    tol : float, default 1e-12
+        Stop once ``chi`` is reached and the energy per site changes by less than this
+        between steps (after at least four steps).
+    seed : int, default 0
+        Seeds the random starting blocks.
+    backend : str or backend, default 'numpy'
+        As in `get_backend`; complex.
+    verbose : bool, default False
+        Print progress every 20 steps.
+    """
     n_iter: int = 400
     tol: float = 1e-12
     seed: int = 0
@@ -72,15 +97,31 @@ class IDMRGOptions:
 def idmrg(mpo_or_g: Any, chi: int,
           options: Optional[Union[IDMRGOptions, Dict[str, Any]]] = None,
           **legacy_kwargs: Any) -> Dict[str, Any]:
-    """Infinite-system DMRG for a bulk MPO tensor, or for the TFIM at field `g`.
+    """Infinite-system DMRG for a translation-invariant MPO, or for the TFIM at field `g`.
 
-    `mpo_or_g` is either a number (the TFIM field) or a rank-4 bulk tensor
-    ``(D, D, d, d)`` whose channel 0 starts a term and channel ``D-1`` ends one, as in
-    `tfim_bulk_mpo`. Settings go in `options` or as flat keywords (`n_iter`, `tol`, `seed`,
-    `backend`, `verbose`); `be=` is a deprecated alias of `backend`.
+    Parameters
+    ----------
+    mpo_or_g : float or ndarray
+        A number, the transverse field g of the TFIM ``H = -sum sx sx - g sum sz`` (Pauli
+        matrices, `tfim_bulk_mpo`); or a bulk MPO tensor of shape ``(D, D, d, d)``, axes
+        ``(left, right, out, in)``, whose channel 0 starts a term and channel D - 1 ends one,
+        as in `tfim_bulk_mpo`.
+    chi : int
+        Maximum bond dimension, >= 1.
+    options : IDMRGOptions or dict, optional
+        Settings; see `IDMRGOptions`. They can also be passed flat (`n_iter`, `tol`, `seed`,
+        `backend`, `verbose`); `be=` is a deprecated alias of `backend`.
 
-    Returns dict with e0 (energy/site), S (entanglement), xi (correlation length),
-    svals, iters, e_hist, and the converged bulk tensors A,B."""
+    Returns
+    -------
+    dict
+        ``e0``: energy per site (float; NaN if fewer than two steps ran). ``S``: von Neumann
+        entropy of the central bond (natural log). ``xi``: correlation length in sites, from
+        the transfer matrix of the two-site cell (``A``, ``B`` and the central Schmidt values of
+        the last two steps), i.e. of the slowest-decaying connected correlation. ``svals``: the normalised central Schmidt values (array
+        of length <= chi). ``iters``: steps run. ``e_hist``: energy per site after each step.
+        ``A``, ``B``: the last left and right tensors, numpy arrays ``(left, phys, right)``.
+    """
     if "be" in legacy_kwargs:
         if "backend" in legacy_kwargs:
             raise TypeError("idmrg() got both 'be' and 'backend'")
@@ -109,7 +150,10 @@ def _idmrg(mpo_or_g, chi, n_iter, tol, seed, be, verbose):
     S_ent = np.nan
     svals = None
     A = B = None
+    sv_prev = np.ones(1)                                    # Schmidt values of the last centre
     for it in range(n_iter):
+        if svals is not None:
+            sv_prev = svals
         shape = tuple(int(x) for x in theta.shape)          # (aL,d,d,aR)
         aL, _, _, aR = shape
 
@@ -149,10 +193,10 @@ def _idmrg(mpo_or_g, chi, n_iter, tol, seed, be, verbose):
         if len(e_hist) >= 4 and k == chi and abs(e_hist[-1] - e_hist[-2]) < tol:
             break
 
-    An = be.to_numpy(A)
+    An, Bn = be.to_numpy(A), be.to_numpy(B)
     return {"e0": e_hist[-1] if e_hist else np.nan, "S": S_ent,
-            "xi": _xi_from_tensor(An), "svals": svals, "iters": it + 1,
-            "e_hist": e_hist, "A": An, "B": be.to_numpy(B)}
+            "xi": _xi_from_cell(An, svals, Bn, sv_prev), "svals": svals, "iters": it + 1,
+            "e_hist": e_hist, "A": An, "B": Bn}
 
 
 def mixed_field_bulk_mpo(g, h):
@@ -180,8 +224,7 @@ def mixed_field_bond_h(g, h):
     """
     hb = -np.kron(SX, SX) - g * np.kron(SZ, I2) - h * np.kron(SX, I2)
     # hb is (s1 s2) x (t1 t2); reshaping gives [s1_out, s2_out, s1_in, s2_in] directly, which is
-    # the "stuv" layout _bond_energy_density contracts. Do NOT transpose -- an earlier version
-    # did, producing e0 = -1.4252 against the exact -1.6719 at g=1.5, h=0.
+    # the "stuv" layout _bond_energy_density contracts. Do not transpose: that gives a wrong e0.
     return hb.reshape(2, 2, 2, 2)
 
 

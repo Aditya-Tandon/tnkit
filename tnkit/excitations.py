@@ -7,13 +7,13 @@ momentum-resolved excitation ansatz
 
 and solve the variational eigenproblem for omega(p), the quasiparticle dispersion.
 
-WHY THIS EXISTS
----------------
-Every dispersion relation in the project so far comes from the exact free-fermion solution, which
-works only because the TFIM is integrable. The moment a longitudinal field or a Z2 gauge constraint
-is switched on there is no epsilon(k), hence no v_max, hence no way to predict the Lieb-Robinson
-light cone or size a finite-size window. This supplies epsilon(k)
-variationally, from the state itself.
+WHY
+---
+The exact free-fermion dispersion exists only because the TFIM is integrable. With a
+longitudinal field or a gauge constraint there is no closed-form epsilon(k), hence no v_max to
+predict the Lieb-Robinson light cone or to size a finite window. This module computes the
+dispersion variationally, from the state (Haegeman et al., PRB 85, 100408 (2012);
+Vanderstraeten, Haegeman and Verstraete, SciPost Phys. Lect. Notes 7 (2019)).
 
 THE GAUGE CONDITION IS WHAT MAKES IT WORK
 -----------------------------------------
@@ -40,8 +40,8 @@ from .backend import get_backend, NumpyBackend
 from .krylov import gmres
 from .eigensolver import lanczos_ground
 from ._idmrg import (tfim_bulk_mpo, mixed_field_bulk_mpo, mixed_field_bond_h,
-                    improved_ising_bulk_mpo, improved_triple_h, improved_critical_g,
-                    improved_dispersion_exact, SYMANZIK_LAMBDA)
+                    improved_ising_bulk_mpo, improved_triple_h)
+from ._idmrg import improved_critical_g, improved_dispersion_exact, SYMANZIK_LAMBDA  # noqa: F401
 from ._vumps import vumps, _left_environment, _right_environment
 
 _NP = NumpyBackend()
@@ -100,13 +100,12 @@ def _to_np(x):
 def bond_pinv(C, rcond=1e-3):
     """Regularised inverse of the bond matrix. Returns (C^{-1}, number of directions dropped).
 
-    The cutoff acts relative to the largest singular value. 1e-3 is the value validated in the
-    two-particle off-shell fix, where it was scanned against two quantities at once: the
-    two-packet energy residual (window energy above the vacuum minus omega(+k0) + omega(-k0))
-    and the overlap |<R_in(k)|R_out(k)>| of the in- and out-references at the same momentum.
-    Below it C^{-1} amplifies small Schmidt directions until every reference collapses onto
-    one vector (the energy residual cannot see this; the overlap can); above it the fix stops
-    removing the deformation.
+    The cutoff acts relative to the largest singular value. With 1e-3 the two-particle states
+    of `two_particle_state` have both a small energy residual (window energy above the vacuum
+    minus omega(+k0) + omega(-k0)) and a small overlap of in- and out-references at the same
+    momentum. A smaller cutoff lets C^{-1} amplify small Schmidt directions until every
+    reference collapses onto one vector (the energy residual cannot see this; the overlap
+    can); a larger one leaves the deformation in place.
     """
     Cn = np.asarray(_to_np(C), dtype=complex)
     U, s, Vh = np.linalg.svd(Cn)
@@ -127,11 +126,9 @@ def _solve_channel(source, apply_T, phase, D, dW, be, tol=1e-10, maxiter=400):
     offending direction, so GMRES still converges to the (unique, physical) solution in the
     complement.
 
-    The relative residual is CHECKED here rather than assumed. A silently unconverged solve does
-    not produce a slightly-wrong dispersion -- it produces an H_eff that is not even bounded, and
-    the symptom is a huge negative "excitation energy" (measured -2.5e10 at g_x=1, g_z=0.16,
-    chi=32, where chi=16 was clean). Failing loudly here is the difference between a caught bug
-    and a corrupted data point.
+    The relative residual is checked here rather than assumed. An unconverged solve does not
+    give a slightly wrong dispersion: it gives an unbounded H_eff, whose symptom is a huge
+    negative "excitation energy". It raises instead.
     """
     def mv(v):
         x = v.reshape(D, dW, D)
@@ -170,9 +167,8 @@ class QuasiparticleSolver:
         # Energy zero. The VUMPS environments are regularised so the EXTENSIVE ground-state
         # energy is projected out of the identity channel, but that leaves a finite residual
         # offset: the ground state itself satisfies H_AC |AC> = lambda0 |AC> with lambda0 != 0.
-        # Excitation energies are measured from that zero, so it must be subtracted. Without
-        # this, omega(p) comes out with the right SHAPE but a constant offset -- which is exactly
-        # how the bug presented (err = 2.0279 identically at every momentum).
+        # Excitation energies are measured from that zero, so it must be subtracted; otherwise
+        # omega(p) has the right shape but a constant offset.
         AC = be.einsum("asb,bc->asc", AL, C)
         HAC = _apply_HAC(self.LW, AC, self.RW, W, be)
         num = be.vdot(AC.reshape(-1), HAC.reshape(-1))
@@ -237,15 +233,10 @@ class QuasiparticleSolver:
         # and it cannot exceed the operator norm of the local Hamiltonian by orders of magnitude.
         # Checking this turns a silent corruption into an exception when nothing upstream noticed.
         #
-        # BACKSTOP, NOT THE GUARD. This test was originally the ONLY thing standing between the
-        # g_z=0.16 blow-up (m_1 = -2.5e10) and the data, which made a conditioning bug look like a
-        # platform bug. It was masking, not diagnosing: the Lanczos had converged perfectly well --
-        # to the ground state of a corrupted operator, because the VUMPS MPO environment fed to
-        # this solver had norm 1.4e15. The actual defect was an unvalidated transfer-operator fixed
-        # point in tnkit.vumps._left_fixed_point plus an unchecked residual in _energy_channel;
-        # both now raise at the point of failure. Keep this check anyway -- a
-        # cheap invariant on the final answer is worth having -- but do not read a pass here as
-        # evidence that the environments are sound.
+        # A backstop, not the guard: a corrupted environment (an unconverged transfer fixed point
+        # or energy channel) can give a perfectly converged Lanczos on a corrupted operator.
+        # `_left_fixed_point` and `_energy_channel` in tnkit.vumps check those where they fail;
+        # a pass here is not evidence that the environments are sound.
         if not np.isfinite(w):
             raise RuntimeError(f"dispersion_at(p={p:.6g}): omega is not finite ({w})")
         if w < -max(1e-8, 100 * tol):
@@ -266,17 +257,13 @@ class QuasiparticleSolver:
         costs D^2 matvecs = O(2000) GMRES solves per momentum. Implicitly-restarted Lanczos needs
         a few dozen instead.
 
-        This is what unlocks the multi-particle spectrum: the paper's index j runs over every
-        stable particle below the two-particle threshold, and m_2/m_1 = 1.618 at the E8 point is
-        the headline check. It is also how the lattice-to-continuum constant beta is calibrated,
-        by matching alpha_2(eta) and alpha_3(eta) to the measured spectrum.
+        This gives the multi-particle spectrum: the index j runs over every stable particle
+        below the two-particle threshold (m_2/m_1 = 1.618 at the E8 point).
 
-        HARD LIMIT, inherited from the ansatz and not a bug: this is only meaningful BELOW the
-        two-particle threshold, E < 2 m_1. Above it the target excitation sits inside a continuum
-        of scattering states, the gap the variational method relies on closes, and convergence
-        degrades. The paper hits the same wall and cannot resolve m_3 (= 1.989 at E8, within 0.6%
-        of 2 m_1). Expect returned bands at or above 2*band[0] to be unreliable, and check rather
-        than trust them.
+        Limit of the ansatz: the result is meaningful only below the two-particle threshold,
+        E < 2 m_1. Above it the excitation sits in a continuum of scattering states, the gap the
+        variational method relies on closes, and convergence degrades. Treat bands at or above
+        2 * band[0] as unreliable and check them.
         """
         from scipy.sparse.linalg import LinearOperator, eigsh
 
@@ -393,70 +380,44 @@ def improved_excitations(g, h, lam, chi, momenta, nbands=1, backend="numpy",
 def two_particle_state(AL, AR, C, VL, X1, X2, n1, n2, n_sites, be, fix_C=True, rcond=1e-3):
     """The basis state |(n1, B1), (n2, B2)> as an explicit finite window of tensors.
 
-    THE LEFT INSERTION IS OFF SHELL UNLESS fix_C=True.
-    Pushing the middle A_L region into the right gauge with A_L C = C A_R gives
+    The window is AL to the left of every insertion and AR to the right of the last one, the
+    standard multi-particle tangent-space ansatz (the one-particle ansatz applied twice), for
+    n1 < n2::
 
-        A_L^i B1 A_L^m B2 A_R^t = A_L^i (B1 C) A_R^m (C^{-1} B2) A_R^t,
-
-    and only the right-hand form has each insertion in the standard one-particle slot (A_L left,
-    A_R right, both environments the identity). So with the plain B1 the LEFT particle is built
-    from the deformed tangent vector B1 C, whose Rayleigh quotient against H_eff(k) is above
-    omega(k) by an amount set by the spread of C's singular values -- i.e. it gets WORSE with
-    chi_vac while omega(k) does not move. Measured: that Rayleigh quotient reproduces the whole
-    measured off-shell residual of the window to 0.35% over chi_vac = 8..48.
-
-    fix_C=True applies B1 -> B1 C^{-1} (regularised, cutoff `rcond`), which drops the two-packet
-    residual onto the one-packet envelope floor at every bond dimension. It is ON by default --
-    the corrected construction is the correct one, and the (fix_C, rcond=1e-3) pair is the one
-    validated against both the two-packet energy residual and the same-momentum in/out
-    reference overlap (see `bond_pinv`). Pass fix_C=False only to reproduce the legacy
-    construction for A/B comparison; older archived results used that legacy construction and
-    are reproduced at their recorded code_commit, not at HEAD.
-
-    Structure, for n1 < n2:
-
-        AL ... AL  B1  AR ... AR  B2  AR ... AR
+        AL ... AL  B1  AL ... AL  B2  AR ... AR
                    ^n1            ^n2
 
-    AL to the left of the first insertion, AR everywhere to the right of it. Both B tensors are
-    built from the SAME null-space isometry V_L, so each independently satisfies the left gauge
-    condition sum_s AL[s]^dag B[s] = 0.
+    Both B tensors are built from the same null-space isometry V_L of AL, so each satisfies the
+    left gauge condition sum_s AL[s]^dag B[s] = 0, which refers to AL; a B with AR as its left
+    neighbours would be gauge-fixed against a tensor that is not there.
 
-    TWO USES, and they are the same object:
+    The left insertion is off shell unless fix_C=True. Moving the middle AL region into the
+    right gauge with AL C = C AR gives
 
-      1. Scattering (their Eq. 15). Superposing these with Gaussian coefficients in n1, n2 gives a
-         two-particle wave packet in-state. The paper notes such a state is representable at bond
-         dimension 2*D_vac; this routine builds the individual basis states, not the superposition.
+        AL^i B1 AL^m B2 AR^t = AL^i (B1 C) AR^m (C^{-1} B2) AR^t,
+
+    in which each insertion sits in the standard one-particle slot (AL left, AR right, both
+    environments the identity). So with the plain B1 the left particle is built from the
+    deformed tangent vector B1 C, whose Rayleigh quotient against H_eff(k) lies above omega(k)
+    by an amount set by the spread of C's singular values; it grows with chi_vac while omega(k)
+    does not. fix_C=True (the default) applies B1 -> B1 C^{-1}, regularised with the relative
+    cutoff `rcond` (see `bond_pinv`). fix_C=False gives the undeformed construction.
+
+    Two uses of the same object:
+
+      1. Scattering. Superposing these with Gaussian coefficients in n1, n2 gives a two-particle wave-packet
+         in-state, representable at bond dimension 2 D_vac; this routine builds the individual
+         basis states, not the superposition.
 
       2. Containing the continuum. The single-B ansatz spans only one-particle states, so once a
-         would-be bound state rises above 2*m_1 the variational minimum in that space IS the
-         two-particle continuum and the bound state is swallowed -- this shows up as band 2
-         crossing 2*m_1 and tracking the continuum edge from there on. That is a property of
-         the ansatz, not a tolerance to tighten. Including
-         states like these in the basis represents the continuum explicitly, so a genuine
-         near-threshold bound state can separate from it instead of being lost.
+         would-be bound state rises above 2 m_1 the variational minimum in that space is the
+         two-particle continuum, and the bound state is lost (band 2 crosses 2 m_1 and follows
+         the continuum edge). Including these states in the basis represents the continuum
+         explicitly, so a near-threshold bound state can separate from it.
 
-    GAUGE BETWEEN THE INSERTIONS -- this was wrong, and here is the correction.
-
-    An earlier version used AR throughout the region right of n1, i.e. AL..AL B1 AR..AR B2 AR..AR,
-    on the reasoning that it kept every tensor right-canonical there. That is inconsistent: BOTH B
-    tensors are built from V_L, the null space of AL, so each satisfies sum_s AL[s]^dag B[s] = 0 --
-    a condition referred to AL. Putting B2 in a region whose left neighbours are AR gauge-fixes it
-    against a tensor that is not there.
-
-    The symptom was decisive and is worth recording, because it looked like a physical result rather
-    than a bug: with AR in the middle, the two-particle energy is INDEPENDENT OF SEPARATION to ten
-    digits -- 4.8848208102 at separations 8, 12, 16, 20, 24, 28 and 32 alike (g=1.5, chi=16, 81-site
-    window, X the variational minimum). Two excitations 32 sites apart in a gapped model cannot have
-    exactly the energy they have at 8 sites. The second insertion was simply not contributing as an
-    independent excitation.
-
-    Correct is AL to the left of EVERY insertion and AR to the right of every insertion,
-    AL..AL B1 AL..AL B2 AR..AR, which is the standard multi-particle tangent-space ansatz and is
-    genuinely "the one-particle ansatz applied twice". With it the energy converges with separation
-    and reaches 7.6567 against a non-interacting target of 2*E1 = 7.5285 (a 1.7% residual that is
-    still under investigation -- a candidate is that using the SAME X for both particles is not a
-    clean two-particle state, since Ising domain walls are fermionic).
+    Using the same X for both particles need not give a clean two-particle state (Ising domain
+    walls are fermionic): the energy at large separation can differ from 2 E1 by a small
+    residual.
 
     """
     if not (0 <= n1 < n2 < n_sites):

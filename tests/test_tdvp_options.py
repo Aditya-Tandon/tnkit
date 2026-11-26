@@ -91,3 +91,18 @@ def test_graph_capture_yields_to_a_krylov_cap(setup, monkeypatch):
         _run(1, mps0, mpo, krylov_m=7, graph="on")
     with pytest.raises(ValueError, match="krylov_m"):
         _run(1, mps0, mpo, krylov_m=7, prefix_graph=object())
+
+
+def test_meas_every_must_be_a_positive_integer():
+    from tnkit.models import tfim_mpo
+    from tnkit.tdvp import tdvp1_evolve, tdvp2_evolve
+    from tnkit.tdvp_evolver import TDVPEvolver
+    from tnkit._dmrg import random_mps
+    mps, mpo = random_mps(4, 2), tfim_mpo(4, 1.0)
+    for bad in (0, -1, 1.5, True):
+        with pytest.raises(ValueError, match="meas_every"):
+            tdvp1_evolve(mps, mpo, 0.05, 1, meas_every=bad, measure=len)
+        with pytest.raises(ValueError, match="meas_every"):
+            tdvp2_evolve(mps, mpo, 2, 0.05, 1, meas_every=bad)
+        with pytest.raises(ValueError, match="meas_every"):
+            TDVPEvolver(mps, mpo, 0.05, 2, meas_every=bad)

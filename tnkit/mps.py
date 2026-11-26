@@ -1,16 +1,10 @@
-"""The MPS type: a list of rank-3 site tensors that knows what its indices mean.
+"""The MPS type: a list of rank-3 site tensors with a documented index order.
 
-An MPS in tnkit has always been a bare Python list of rank-3 arrays, and it still
-is -- `MPS` subclasses `list`, so `isinstance(mps, list)` is True, indexing,
-slicing, iteration, `len`, `zip`, unpacking and in-place mutation all behave
-exactly as before, and every script written against the bare-list convention keeps
-working with no change. What the type adds is a home for three things that were
-scattered: the index convention (previously a sentence in the `tnkit.dmrg` module
-docstring), the host round-trip (`observables.to_numpy`), and the entanglement
-profile (`observables.all_entropies`).
-
-Nothing here computes anything new. Both methods delegate to `tnkit.observables`,
-which remains the place the arithmetic lives.
+`MPS` subclasses `list`, so indexing, slicing, iteration, `len`, unpacking and in-place
+mutation behave as on a list, and every function that takes an MPS also takes a plain list.
+The type adds the index convention, the host copy (`observables.to_numpy`) and the
+entanglement profile (`observables.all_entropies`); the arithmetic stays in
+`tnkit.observables`.
 """
 from __future__ import annotations
 import functools
@@ -35,36 +29,39 @@ MutableMPS = MutableSequence[Tensor]
 class MPS(list):
     """A matrix-product state: one rank-3 tensor per site, in tnkit's index order.
 
-    INDEX CONVENTION (the whole contract, and the reason this type exists)::
+    Index convention::
 
         M[i] : (left_bond, phys, right_bond) = (a, s, b)
 
-    with ``M[i].shape[2] == M[i+1].shape[0]`` at every bond, and the outermost
-    bonds of dimension 1 for the open-boundary chains tnkit solves. The physical
-    dimension is ``d = M[i].shape[1]`` (2 for the TFIM). For reference, the MPO
-    that a solver takes alongside it uses a *different* order::
+    with ``M[i].shape[2] == M[i+1].shape[0]`` at every bond, outer bonds of dimension 1
+    (open boundaries), and physical dimension ``d = M[i].shape[1]``. Sites are numbered from
+    0. The MPO a solver takes alongside it uses a different order::
 
         W[i] : (mpo_left, mpo_right, phys_out, phys_in) = (wl, wr, s, s')
 
-    -- so an MPO tensor is not an MPS tensor with an extra leg, and mixing the two
-    orders is the bug class this type is named after. Both conventions were
-    previously documented only in module docstrings (`tnkit.dmrg` for the MPS,
-    `tnkit.models` for the MPO).
+    so an MPO tensor is not an MPS tensor with an extra leg.
 
-    GAUGE. `center` is the site of the orthogonality centre when it is known, else
-    None: every tensor left of it is left-canonical, every tensor right of it is
-    right-canonical, to the isometry accuracy of the truncation that produced the
-    state (exact for the SVD and Gram paths, approximate for ``trunc='density'``). The solvers,
-    `right_canonicalize`, `compress` and `tnkit.window.build_window` set it; any
-    change to the list's contents (item assignment, append, ...) resets it to None,
-    since the state may no longer be in that gauge. It is a record, not a guarantee:
-    writing into a tensor in place (``mps[3][...] *= 2``, ``mps[3].mul_(2)``) is
-    invisible to it. The observables never rely on it; they canonicalise their own copy.
+    Parameters
+    ----------
+    tensors : sequence of tensors, default ()
+        The site tensors, on any backend (numpy, torch; block or symmetric tensors too).
+    center : int or None, default None
+        The orthogonality centre, ``0 <= center < len(tensors)``, if known: every tensor left
+        of it is left-canonical and every tensor right of it right-canonical, to the isometry
+        accuracy of the truncation that produced the state.
 
-    Tensors may live on any backend. `dmrg(..., backend="torch-cuda")` returns CUDA
-    tensors inside an `MPS`; `.entropies()` measures them on the device and
-    `.to_numpy()` brings the state itself home. Both refuse block tensors (symmetric
-    DMRG); `tnkit.block_backend.to_dense_mps` converts those first.
+    Notes
+    -----
+    The solvers, `right_canonicalize`, `compress` and `tnkit.window.build_window` set
+    `center`. Any change to the list's contents (item assignment, append, ...) resets it to
+    None, since the state may no longer be in that gauge. Writing into a tensor in place
+    (``mps[3][...] *= 2``) is not seen. The observables never rely on it; they canonicalise
+    their own copy.
+
+    ``dmrg(..., backend="torch-cuda")`` returns CUDA tensors inside an `MPS`;
+    `.entropies()` measures them on the device and `.to_numpy()` copies the state to the
+    host. Both refuse block and symmetric tensors: `tnkit.block_backend.to_dense_mps` and
+    `tnkit.symmetric_backend.to_dense_mps` convert those first.
 
     Examples
     --------
@@ -73,7 +70,7 @@ class MPS(list):
     >>> E, mps, info = dmrg(tfim_mpo(32, 1.0), chi=32) # doctest: +SKIP
     >>> isinstance(mps, list), len(mps), mps[0].shape  # doctest: +SKIP
     (True, 32, (1, 2, 2))
-    >>> S = mps.entropies()                            # every bond, one sweep
+    >>> S = mps.entropies()                            # doctest: +SKIP
     """
 
     __slots__ = ("_center",)
@@ -99,32 +96,23 @@ class MPS(list):
         return MPS, (list(self), self.center)
 
     def to_numpy(self) -> "MPS":
-        """Host copy of this state as contiguous numpy arrays. Never mutates self.
-
-        A no-op cost on the numpy backend (a copy of O(N chi^2) numbers, far less
-        than one DMRG sweep moves) and one device-to-host transfer per site on a
-        torch backend. Delegates to `tnkit.observables.to_numpy`.
-        """
+        """Host copy of this state as contiguous numpy arrays, as an `MPS` with the same
+        `center`. Never mutates self; one device-to-host transfer per site on torch."""
         from .observables import to_numpy
         return MPS(to_numpy(self), center=self.center)
 
     def entropies(self) -> np.ndarray:
-        """Von-Neumann entropy at every bond, from ONE sweep. Returns array[N-1].
+        """Von Neumann entropy (natural log) of every bond, from one sweep.
 
-        Delegates to `tnkit.observables.all_entropies`: `entanglement_entropy` in a
-        loop re-canonicalises and re-sweeps per call and so costs O(N^2 chi^3),
-        which is hours at N = 600 where this is 33 s.
+        Returns an array of length N - 1; entry i is the bond between sites i and i + 1. One
+        sweep costs O(N chi^3), where calling `entanglement_entropy` per bond costs
+        O(N^2 chi^3). Delegates to `tnkit.observables.all_entropies`.
         """
         from .observables import all_entropies
         return all_entropies(self)
 
     def __repr__(self) -> str:
-        """Shape summary, not 2 N chi^2 numbers.
-
-        `list.__repr__` on a 600-site state prints every tensor, which is useless
-        in a REPL and slow in a log. The elements themselves are untouched: this
-        changes only what `repr(mps)`/`print(mps)` show, never what they contain.
-        """
+        """A shape summary instead of every tensor; the elements are untouched."""
         if not self:
             return "MPS(empty)"
         try:

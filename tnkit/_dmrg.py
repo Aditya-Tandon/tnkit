@@ -1,23 +1,20 @@
-"""Two-site DMRG that ties together the matrix-free eigensolver and the
-SVD/truncation step, validated on the TFIM.
+"""DMRG: the sweep, its local eigensolve and truncation, and the MPS helpers it uses.
 
-Why two-site: each local update (i) solves a two-site ground-state problem via
-the matrix-free Lanczos and (ii) truncates the optimised block back to bond
-dimension chi with an SVD/density step. It also grows bonds automatically, so
-it is the natural testbed for both pieces.
+Each local update solves the ground-state problem of one or two sites with a matrix-free
+eigensolver (`tnkit.eigensolver`) and, for two sites, cuts the optimised block back to bond
+dimension chi with an SVD, which also lets the bonds grow.
 
-Tensors (the same conventions the `tnkit.mps.MPS` docstring now carries in full):
+Tensor axes (as in `tnkit.mps.MPS`):
   MPS  M[i]: (left_bond, phys, right_bond)               = (a, s, b)
   MPO  W[i]: (mpo_left, mpo_right, phys_out, phys_in)     = (wl, wr, s, s')
-  envs L[i]: (bra_bond, mpo_bond, ket_bond) at left edge of site i
-       R[i]: (bra_bond, mpo_bond, ket_bond) at right edge of site i
+  envs L[i]: (bra_bond, mpo_bond, ket_bond) at the left edge of site i
+       R[i]: (bra_bond, mpo_bond, ket_bond) at the right edge of site i
 
-BACKEND: all heavy work (contractions, SVD, the eigensolve) goes through a
-`backend` object (numpy or torch-cpu/cuda/mps), so `dmrg(..., backend="torch-cuda")`
-runs the whole kernel on an NVIDIA GPU with cuSOLVER + double precision. The default
-is 'auto': real dtype (cheaper) when the problem is real, complex
-otherwise -- see `DMRGOptions.backend` and `get_backend`. The contraction helpers
-take an optional `be` (default numpy, complex) so external callers keep working.
+All heavy work (contractions, SVD, the eigensolve) goes through a backend object (numpy, or
+torch on the CPU, CUDA or Apple MPS), so ``dmrg(..., backend="torch-cuda")`` runs on an NVIDIA
+GPU in double precision. The default is 'auto': a real dtype when the problem is real, complex
+otherwise (see `DMRGOptions` and `get_backend`). The contraction helpers take an optional `be`
+(default numpy, complex).
 """
 from __future__ import annotations
 import dataclasses
@@ -43,7 +40,7 @@ from . import linalg as tl
 
 _EIGSOLVERS = {"lanczos": lanczos_ground, "lanczos-restart": lanczos_ground_restart,
                "lobpcg": lobpcg_ground,
-               "scipy-host": scipy_host_ground}   # scipy-host = thesis-architecture baseline
+               "scipy-host": scipy_host_ground}   # scipy's Lanczos on the host
 _NP = NumpyBackend()
 _BLOCK_EXPAND = 4        # opening expansion sweeps on block MPOs when expand=None
 
@@ -314,113 +311,102 @@ def _right_canonicalize_blocks(M: MutableMPS, be: Any) -> MutableMPS:
 # --------------------------------------------------------------------------- #
 @dataclasses.dataclass
 class DMRGOptions:
-    """Everything `dmrg` can be told, apart from the two things it cannot run
-    without (`mpo` and `chi`).
+    """Settings of `dmrg`, apart from `mpo` and `chi`.
 
-    The old flat signature took twenty-one arguments. They are the same arguments
-    with the same defaults and the same meanings -- this is a grouping, not a
-    redesign -- and every field can still be passed flat to `dmrg` (see its docstring).
-    Fields added since (`charge`, `sites`, `expand*`, `rtol`) change the historical
-    behaviour only through the defaults of `rtol` and, on block MPOs, `expand`. Grouping
-    them buys three things a long signature cannot: a settings object can be built
-    once and reused across a scan, `dataclasses.replace` gives one-field variants
-    for an A/B arm, and the object can be printed as the record of how a number was
-    produced. It is NOT hashable -- none of the options classes is frozen -- and it serialises to
-    JSON only while every field is a scalar, which stops being true the moment
-    `init_mps` carries a state or `backend` carries a Backend object.
+    Every field can also be passed to `dmrg` as a keyword, with the same default. One object
+    can be reused across a scan, and `dataclasses.replace` gives variants that differ in one
+    field. It is not hashable, and serialises to JSON only while every field is a scalar (not
+    when `init_mps` holds a state or `backend` a backend object).
 
-    Convergence
-    -----------
-    n_sweeps : hard cap on full (right + left) sweeps.
-    tol, rtol : the run stops once |E - E_prev| between sweeps falls below
-               max(tol, rtol * |E|), the looser of the two, so a `tol` below rtol * |E| has
-               no effect: a tighter stop needs rtol=0 as well, and tol=0, rtol=0 runs every
-               sweep up to `n_sweeps`. E is the last local eigenvalue of the sweep; at a
-               truncated chi it keeps moving by about the truncation error, which grows
-               with N, so an absolute `tol` alone below that level runs every sweep.
-    eig_tol  : tolerance handed to the local eigensolver, read against `eig_stop`.
-    eig_stop : 'residual' (default) | 'energy'. Read the note in `dmrg` before
-               changing it -- the two are not the same standard, and the difference
-               is a factor of sqrt(tol) in the state.
-    eig_tol_warmup, warmup_sweeps : loose local solves for the first
-               `warmup_sweeps` sweeps (default off, i.e. `eig_tol_warmup=None`).
-
-    Local eigensolver
-    -----------------
-    eig         : 'lanczos' | 'lanczos-restart' | 'lanczos-mixed' | 'lobpcg' |
-                  'scipy-host' (the last is the thesis-architecture baseline, kept
-                  for A/B benchmarking, not for production).
-                  Default: 'lanczos-restart' -- thick
-                  restart at identical accuracy and 25-31% faster wall time (see
-                  `lanczos_ground_restart`). Pass eig='lanczos' for the old,
-                  unbounded-basis solver.
-    warm_start  : start from the current two-site block (True) or a fresh random
-                  vector (False).
-    reorth      : 'full' | 'periodic' | 'none'. 'full' is both the safe and the
-                  fast choice here; 'periodic' is refuted (see `lanczos_ground`).
-    max_iter    : Krylov dimension cap. None scales it with the block:
-                  min(block_dim, max(200, 4*chi)). A fixed 200 starves the local
-                  solve at large chi -- the block is ~4*chi**2-dimensional -- so the
-                  energy stalls above the exact value.
-    restart_m, restart_k, reorth_alg : thick-restart parameters, used only by
-                  eig='lanczos-restart'.
-    mixed_tol_lo : precision-switch tolerance, used only by eig='lanczos-mixed'.
-
-    Truncation and device
-    ---------------------
-    trunc   : 'svd' | 'gram' | 'randomized' | 'randomized-mixed' | 'density' | 'cutn'.
-              'density' is deprecated: use 'svd'.
-              'gram' is opt-in and an exception: it failed its speed/accuracy acceptance
-              test and is kept for speed. It replaces the SVD with GEMM + eigh of the smaller
-              Gram matrix (faster on GPUs); in double precision each cut matches 'svd' to
-              rounding. It is for double precision only. It is NOT reproducible against 'svd': the
-              rounding differs, so a run that must match an 'svd' run should use 'svd'.
-              Singular values below ~1e-8 of the largest are not resolved, so do not read
-              small entanglement spectra from it. Single precision and block tensors are
-              refused.
-    backend : 'numpy' | 'torch-cpu' | 'torch-cuda' | 'torch-mps', a '-real' variant,
-              a Backend object, or 'auto'.
-              Default: 'auto' -- `get_backend` picks
-              'numpy-real' when `mpo` (and `init_mps`, if given) are real to its
-              tolerance, 'numpy' (complex) otherwise. Real is 2x the memory and
-              2-4x the dense flops at identical accuracy on a real Hamiltonian; the
-              auto rule means a genuinely complex MPO (e.g. one built with SY) still
-              gets a complex backend by default rather than a spurious TypeError or
-              a silently truncated imaginary part. Pass backend='numpy' to force the
-              old complex-always default back.
-
-    State and reporting
-    -------------------
-    init_mps : optional starting MPS (adiabatic continuation from a nearby
-               parameter). Defaults to a random MPS built from `seed`.
-    charge   : block MPO only: the total charge (a sector label) of the state
-               sought. Required with a block MPO unless `init_mps` is given (its
-               charge is then the sector); None with a dense MPO.
-    seed     : seeds both the random initial state and the truncation sketches.
-    verbose  : print the energy after every sweep.
-
-    Sweep and subspace expansion
-    ----------------------------
-    sites  : 2 (default) optimises two sites at a time; 1 optimises one, which is cheaper per
-             step but cannot change a bond's size or charge sectors without `expand`.
-    expand : number of opening sweeps with subspace expansion. None (default): 0 (off) on a
-             dense MPO, and min(4, n_sweeps - 2), at least 0, on a block MPO; the value used
-             is `info["expand"]`. In those sweeps the bond basis left behind by each step is
-             the `chi` leading eigenvectors of x x^H + alpha^2 P P^H, where x is the optimised
-             centre and P is the MPO and environment of the side that keeps the basis applied
-             to x, less its part inside the span of x (Hubig et al., PRB 91, 155115 (2015);
-             with sites=2 this is White's density-matrix correction, except that White's P is
-             not projected). The basis then gains the states H couples to, in their own charge
-             sectors, so a sector the state lacks can fill. Must be less than `n_sweeps`; the
-             stop is read only from the second sweep after the expansion ends, so a run does
-             at least expand + 2 sweeps. Expanding sweeps cut with an exact SVD whatever
-             `trunc` says. Expansion moves a run to another fixed point, not always a lower
-             one: at small `chi` it can end higher than the plain run (12 qubits, chi 8-32,
-             10 seeds: higher by over 1e-8 in 2 of 100 runs, by up to 2e-2; lower in 6).
-             It cannot leave a start that is an exact eigenstate while `warm_start` is True.
-    expand_alpha, expand_decay : alpha in sweep k < expand is expand_alpha * expand_decay**k,
-             and 0 afterwards, so the last sweeps are unbiased. P scales with H, so alpha is
-             in units of 1/energy.
+    Parameters
+    ----------
+    n_sweeps : int, default 8
+        Maximum number of full sweeps (left to right, then back).
+    tol, rtol : float, default 1e-10 each
+        The run stops once the energy changes between sweeps by less than
+        ``max(tol, rtol * abs(E))``, the looser of the two. So a `tol` below ``rtol * abs(E)``
+        has no effect, a tighter stop needs ``rtol=0`` too, and ``tol=0, rtol=0`` runs all
+        `n_sweeps`. E is the last local eigenvalue of the sweep; at a truncated `chi` it keeps
+        moving by about the truncation error, which grows with N, so an absolute `tol` alone
+        below that level runs every sweep.
+    eig_tol : float, default 1e-9
+        Tolerance of the local eigensolver, read against `eig_stop`.
+    eig_stop : {'residual', 'energy'}, default 'residual'
+        What `eig_tol` measures; see the notes of `dmrg`. Under 'energy' the state is
+        converged only to about ``sqrt(eig_tol)``.
+    eig_tol_warmup : float or None, default None
+        If set, the local tolerance of the first `warmup_sweeps` sweeps.
+    warmup_sweeps : int, default 2
+        Sweeps that use `eig_tol_warmup`.
+    eig : str, default 'lanczos-restart'
+        Local eigensolver. 'lanczos-restart': thick-restart Lanczos, whose basis is capped
+        (`eigensolver.lanczos_ground_restart`). 'lanczos': Lanczos with an unbounded basis.
+        'lanczos-mixed': low-precision matvecs, then a double-precision refinement (dense
+        tensors only). 'lobpcg'. 'scipy-host': scipy's Lanczos on the host around the device
+        matvec, a reference for the cost of a host eigensolver.
+    warm_start : bool, default True
+        Start each local solve from the current block (True) or from a random vector.
+    reorth : {'full', 'none'}, default 'full'
+        Reorthogonalisation of 'lanczos'. 'periodic' raises with ``eig_stop='residual'`` and
+        warns otherwise: it loses orthogonality on long local solves
+        (`eigensolver.check_reorth_periodic`).
+    max_iter : int or None, default None
+        Cap on the Krylov dimension. None uses ``min(block size, max(200, 4 chi))``. A two-site
+        block has about ``4 chi^2`` entries, and a fixed cap of 200 starves the local solve at
+        large `chi`, so the energy stalls above its converged value.
+    restart_m, restart_k : int, default 40 and 10
+        Basis size and kept Ritz vectors of 'lanczos-restart'.
+    reorth_alg : {'cgs2', 'cgs2v2', 'mgs'}, default 'cgs2'
+        Reorthogonalisation kernel of 'lanczos-restart': two batched classical Gram-Schmidt
+        passes ('cgs2v2' conjugates the vector instead of the basis), or sequential modified
+        Gram-Schmidt.
+    mixed_tol_lo : float, default 1e-4
+        Residual at which 'lanczos-mixed' switches to double precision.
+    trunc : str, default 'svd'
+        How a two-site block is cut back to `chi`. 'svd': exact SVD. 'gram': GEMM and eigh of
+        the smaller Gram matrix, faster on GPUs; double precision and dense tensors only; each
+        cut matches 'svd' to rounding but not bit for bit, and singular values below about
+        1e-8 of the largest are not resolved, so do not read small entanglement spectra from
+        it. 'randomized', 'randomized-mixed': randomized SVD. 'cutn': cuTensorNet. 'density' is
+        deprecated and means 'svd'. Block and symmetric tensors take 'svd' only.
+    backend : str or backend, default 'auto'
+        'numpy', 'torch-cpu', 'torch-cuda' or 'torch-mps', each optionally with '-real', a
+        backend object, or 'auto': 'numpy-real' when `mpo` (and `init_mps`) are real to the
+        tolerance of `get_backend`, 'numpy' otherwise. A real backend takes half the memory and
+        fewer flops at the same accuracy on a real Hamiltonian. Pass 'numpy' for a complex
+        state whatever the MPO.
+    init_mps : MPS or None, default None
+        Starting state, for example the result at a nearby coupling. None starts from a random
+        MPS drawn with `seed`.
+    charge : sector label or None, default None
+        Block and symmetric MPOs: the total charge of the state sought, a label of the MPO's
+        symmetry. Under SU(2) a label is twice the spin, so 0 is a singlet and 2 a triplet.
+        Required unless `init_mps` is given (its charge is then used); None for a dense MPO.
+    seed : int, default 0
+        Seeds the random start and the randomized truncations.
+    verbose : bool, default False
+        Print the energy after every sweep.
+    sites : {1, 2}, default 2
+        Sites optimised per step. One-site steps are cheaper but change a bond's size or
+        sectors only through `expand`. Both run on dense, block and symmetric tensors.
+    expand : int or None, default None
+        Number of opening sweeps with subspace expansion. None: 0 on a dense MPO and
+        ``max(0, min(4, n_sweeps - 2))`` on a block or symmetric MPO; the value used is
+        ``info["expand"]``. In those sweeps the bond basis left by each step is the `chi`
+        leading eigenvectors of ``x x^H + alpha^2 P P^H``, where x is the optimised centre and
+        P is the MPO and environment of the side that keeps the basis applied to x, less its
+        part inside the span of x (Hubig et al., PRB 91, 155115 (2015); with ``sites=2`` this
+        is White's density-matrix correction, except that White's P is not projected). The
+        basis then gains the states H couples to, in their own sectors, so a sector the state
+        lacks can fill. Must be less than `n_sweeps`. The stop is read only from the second
+        sweep after the expansion ends, so a run does at least ``expand + 2`` sweeps.
+        Expanding sweeps cut with an exact SVD whatever `trunc` says. Expansion can lead to a
+        different fixed point, not always a lower one: at small `chi` it can end above the
+        plain run. It cannot leave a start that is an exact eigenstate while `warm_start` is
+        True.
+    expand_alpha, expand_decay : float, default 3e-3 and 0.3
+        alpha in sweep ``k < expand`` is ``expand_alpha * expand_decay**k``, and 0 afterwards,
+        so the last sweeps are unbiased. P scales with H, so alpha is in units of 1/energy.
     """
 
     n_sweeps: int = 8
@@ -453,72 +439,75 @@ class DMRGOptions:
 def dmrg(mpo: Sequence[Tensor], chi: Optional[int] = None,
          options: Optional[Union[DMRGOptions, Dict[str, Any]]] = None,
          **legacy_kwargs: Any) -> Tuple[float, MPS, Dict[str, Any]]:
-    """DMRG ground state, two-site by default. Returns (energy, mps, info).
+    """Ground state of an MPO by DMRG, two-site by default.
 
-    Two call styles, one code path::
+    Parameters
+    ----------
+    mpo : sequence of tensors
+        The Hamiltonian, one tensor per site with axes (left, right, out, in): dense arrays
+        of shape ``(wl, wr, d, d)``, block tensors (`to_block_mpo`) or symmetric tensors
+        (`tnkit.symmetric_backend.symmetric_mpo`). Sites are numbered from 0.
+    chi : int
+        Maximum bond dimension, >= 1. On symmetric tensors it counts multiplets, so the dense
+        bond can be larger.
+    options : DMRGOptions or dict, optional
+        Settings; see `DMRGOptions` for every field, its default and its range.
+    **legacy_kwargs
+        Any field of `DMRGOptions`, passed flat. A keyword overrides the same field of
+        `options`.
+
+    Returns
+    -------
+    energy : float
+        The local eigenvalue of the last step of the last sweep.
+    mps : MPS
+        The state: a list of rank-3 tensors ``(left, phys, right)`` on the backend used, with
+        its orthogonality centre at site 0 (``mps.center == 0``) and every other site
+        right-canonical. Dense states also have ``.entropies()`` and ``.to_numpy()``; block
+        and symmetric states keep their tensor type (their ``to_dense_mps`` converts them).
+    info : dict
+        ``sweeps`` (number run), ``energies`` (energy after each sweep), ``sweep_s`` (wall
+        time of each sweep, seconds), ``backend`` (its name), ``blocks`` (True for block and
+        symmetric tensors), ``eig``, ``discarded_weight`` (summed over every cut),
+        ``matvec_calls``, ``phase_time`` (seconds in 'eig', 'trunc' and 'env'),
+        ``mixed_counts``, ``sites``, ``expand`` (expansion sweeps used) and ``expand_alphas``
+        (alpha of each sweep, 0 where none).
+
+    Notes
+    -----
+    Two call styles run the same code::
 
         E, mps, info = dmrg(mpo, chi=64, n_sweeps=20)                     # flat
         E, mps, info = dmrg(mpo, 64, DMRGOptions(n_sweeps=20))            # grouped
 
-    Every keyword of the old flat signature is a field of `DMRGOptions` with the
-    same default, and a flat keyword overrides the corresponding field of an
-    `options` object passed alongside it. The two styles are asserted to agree
-    bit-for-bit in `tests/test_api.py`.
-
-    `mps` is an `MPS` -- a `list` subclass, so it is still a list of rank-3
-    `(left, phys, right)` tensors and every script that treats it as one keeps
-    working. It additionally carries `.entropies()` and `.to_numpy()`, and `center` is 0.
-
-    `info` reports: `sweeps`, per-sweep `energies` and wall times `sweep_s`, `backend`, whether
-    the tensors are `blocks`, the summed `discarded_weight`, `matvec_calls`, `phase_time`,
-    `sites`, the `expand` used, and the expansion weight alpha of every sweep (`expand_alphas`,
-    0 where none).
-
-    Symmetric DMRG (provisional): by default there is no symmetry and the tensors are dense.
-    With an MPO of block tensors (`to_block_mpo`, which takes the sector of every physical
-    state and an abelian `Symmetry`), the same sweep runs on block-sparse tensors and stays
-    in the charge sector `charge`::
+    Symmetries (provisional). With an MPO of block tensors (`to_block_mpo`, which takes the
+    sector of every physical state and an abelian `Symmetry`), the sweep runs on block-sparse
+    tensors and stays in the sector `charge`::
 
         Wb, _ = to_block_mpo(W, [[1, -1]] * N, get_backend("numpy-real"), sym=U1())  # 2 S^z
         E, mps, info = dmrg(Wb, 64, charge=0)
 
-    The start is a random block MPS of total charge `charge` (or `init_mps`, a block
-    MPS), truncation keeps the `chi` largest singular values over all sectors
-    together, and `mps` holds block tensors: `.entropies()` and `.to_numpy()` refuse
-    them, `to_dense_mps` makes them dense. `backend` names the dense backend under the
-    blocks, or is a `BlockBackend`. Block runs expand the subspace in their opening sweeps by
-    default (`expand`); with or without it, a block run at small `chi` can stop at a different
-    fixed point than dense DMRG (see `expand`). An MPO of symmetric tensors
-    (`tnkit.symmetric_backend.symmetric_mpo`, any symmetry, SU(2) included) runs the same way
-    with a `SymmetricBackend`; `chi` then counts multiplets and `charge` is the total sector.
-    Limits: `trunc='svd'` only, no 'lanczos-mixed', and `dmrg_block` and
-    `dmrg_tower(pair_solve=True)` take dense MPOs only.
+    The start is a random block MPS of total charge `charge` (or `init_mps`, a block MPS),
+    and truncation keeps the `chi` largest singular values over all sectors together.
+    `backend` names the dense backend under the blocks, or is a `BlockBackend`. Block runs
+    expand the subspace in their opening sweeps by default (`expand`); with or without it, a
+    block run at small `chi` can stop at a different fixed point than dense DMRG. An MPO of
+    symmetric tensors (`tnkit.symmetric_backend.symmetric_mpo`, any symmetry, SU(2) included)
+    runs the same way on a `SymmetricBackend`; `chi` then counts multiplets and `charge` is
+    the total sector (under SU(2), twice the total spin). On block and symmetric tensors only
+    ``trunc='svd'`` is supported, 'lanczos-mixed' is not, and `dmrg_block` and
+    ``dmrg_tower(pair_solve=True)`` take dense MPOs only. One-site DMRG (``sites=1``) is
+    supported on both.
 
-    eig_stop -- READ THIS BEFORE BENCHMARKING OR QUOTING AN ACCURACY
-    ---------------------------------------------------------------
-    'residual' (the default) stops the local eigensolver on the true Ritz residual
-    ||H x - e x||, i.e. on convergence of the EIGENVECTOR -- which is what DMRG
-    consumes, since x goes straight into the truncation and into the MPS.
-    'energy' (legacy, and the default in most textbook implementations) stops on
-    |e - e_prev|, i.e. on the Rayleigh quotient. The Rayleigh quotient is
-    QUADRATICALLY accurate in the eigenvector error, so the energy rule returns a
-    state only ~sqrt(eig_tol) converged: at eig_tol = 1e-10 the measured residual
-    is ~1e-5 under 'energy' against ~1e-11 under 'residual'.
-
-    That is not a footnote. This distinction has invalidated real comparisons before:
-    a head-to-head against the thesis implementation reported a 6.54x speed-up while
-    actually stopping 16,000x short of the comparison run's convergence; an external
-    baseline built on cuTensorNet showed a flat accuracy floor of 2.2e-5 at every chi
-    that turned out to be sqrt(1e-9) from the stopping rule and had nothing to do with
-    the backend; a thick-restart pre-adoption run reported converged=True at a true
-    residual of 7.7e-6; and a finite-size-scaling exponent revalidation had the energy
-    rule masking a separately refuted reorthogonalisation setting. Measured, accuracy
-    improves 172x / 1,272x / 21,794x at chi = 128 / 256 / 512 -- the gap GROWS with
-    chi -- for 8-25% end-to-end wall, because better local solves cut the sweep count.
-
-    The failure mode is silence: nothing in the output of a run under 'energy'
-    distinguishes it from a converged one. Change this only to reproduce an old
-    number, and record it when you do.
+    The local stopping rule (`eig_stop`). 'residual' (the default) stops the local
+    eigensolver on the Ritz residual ``norm(H x - e x)``, the convergence of the eigenvector,
+    which is what DMRG uses: x goes into the truncation and into the MPS. 'energy', the usual
+    textbook rule, stops on the change of the Rayleigh quotient e. The Rayleigh quotient is
+    quadratically accurate in the eigenvector error, so under 'energy' the state is converged
+    only to about ``sqrt(eig_tol)``: at ``eig_tol=1e-10`` the residual is about 1e-5 against
+    about 1e-11 under 'residual'. The gap grows with `chi`, and 'residual' costs little extra
+    time because better local solves need fewer sweeps. Nothing in the output of a run under
+    'energy' shows the difference, so compare runs only under the same rule.
     """
     # `chi` is a keyword for the drivers that call dmrg(mpo, **kw); both spellings
     # at once used to be a TypeError from the interpreter and stays one here,
@@ -616,12 +605,8 @@ def _dmrg(mpo: Sequence[Tensor], chi: int, o: DMRGOptions) -> Tuple[float, MPS, 
         raise ValueError(f"unknown eig solver {eig!r}; expected one of "
                          f"{sorted(_EIGSOLVERS) + ['lanczos-mixed']}")
     eig_fn = _EIGSOLVERS.get(eig)   # None for 'lanczos-mixed' (handled inline in solve_block)
-    # reorth='periodic' is refuted (see `check_reorth_periodic`) regardless of which local
-    # solver is asked for. `eig == "lanczos"` already gets this check for free every block,
-    # inside `lanczos_ground` itself (it is the only solver that even consults `reorth`), so
-    # it is skipped here to avoid a second raise/warning for that path. Every other eig=
-    # choice silently ignores `reorth` -- an explicit reorth='periodic' from the caller must
-    # still be refused up front, once, before the sweep starts.
+    # reorth='periodic' is refused for every solver (`check_reorth_periodic`); 'lanczos'
+    # checks it itself, and the other solvers ignore `reorth`, so the check is made here once.
     if eig != "lanczos":
         check_reorth_periodic(reorth, eig_stop)
     mixed_counts = {"lo": 0, "hi": 0}

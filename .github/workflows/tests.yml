@@ -1,8 +1,8 @@
 name: tests
 
-# The test suite on Python 3.11 with the CPU build of torch, on non-draft pull requests to
-# main only (not on pushes). No GPU: tests that need a CUDA device skip themselves; run
-# `pytest -m cuda` on a GPU machine before a release tag.
+# The test suite on Python 3.11 with the CPU build of torch, and the documentation build with
+# warnings as errors, on non-draft pull requests (not on pushes). No GPU: tests that need a CUDA
+# device skip themselves; run `pytest -m cuda` on a GPU machine before a release tag.
 
 on:
   pull_request:
@@ -41,3 +41,22 @@ jobs:
           uv pip check
       - name: Tests
         run: uv run --frozen pytest tests/ -q --durations=15
+
+  docs:
+    # The documentation build as Read the Docs runs it: warnings are errors.
+    if: ${{ !github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      PYTHONNOUSERSITE: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v10.3.3
+        with:
+          version: "0.13.9"
+          python-version: "3.11"
+          enable-cache: true
+      - name: Install
+        run: uv sync --frozen --group docs
+      - name: Build
+        run: uv run --frozen --no-sync sphinx-build -W --keep-going -b html docs docs/_build/html

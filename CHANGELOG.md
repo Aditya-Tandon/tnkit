@@ -3,7 +3,9 @@
 Notable changes to `tnkit`. Versions follow [semantic versioning](https://semver.org), written
 in Python's form for pre-releases (`0.2.0rc1`).
 
-## [0.3.0] — 2026-11-24
+## [0.3.0] — 2026-11-26
+
+Results on dense tensors are unchanged bit for bit.
 
 ### Added
 
@@ -23,7 +25,7 @@ in Python's form for pre-releases (`0.2.0rc1`).
   on 6 sites, when no cap is reached and `svd_tol` is small (1e-12 there). A cut inside a pair
   of equal singular values, or a dense state leaking out of its charge sector at a loose
   `svd_tol`, makes the two differ; `degenerate_tol` (passed to `cool` and `thermal_state`)
-  keeps such pairs whole on both. Dense results are unchanged bit for bit.
+  keeps such pairs whole on both.
 - `block_backend.apply_block_mpo`: an MPO applied to a block MPS on the state's backend, then
   compressed as `compress` compresses a dense state; returns the norm of O|psi> and the exact
   infidelity of the cut.
@@ -35,7 +37,7 @@ in Python's form for pre-releases (`0.2.0rc1`).
   per coupled sector, and bond caps count multiplets. `SymmetricBackend` runs the two-site DMRG
   and TDVP drivers on them, and `symmetric_mpo` reduces a dense MPO that commutes with the
   symmetry. Checked against dense arrays and exact diagonalisation, and against stored TensorKit
-  values (below). Dense and block results are unchanged bit for bit.
+  values (below). One-site DMRG and one-site TDVP run on them too.
 - `tnkit.symmetry`: generic fusion, where an outcome may appear more than once and each vertex
   carries a multiplicity label; `cg_tensor`, `f_tensor`, `r_matrix` and `cup` read any fusion
   style as arrays.
@@ -44,8 +46,7 @@ in Python's form for pre-releases (`0.2.0rc1`).
   variables (see the environment guide).
 - `dmrg_excited.mps_inner`, `mpo_expectation`, `mpo_sq_expectation` and `mpo_variance` take
   block and symmetric MPSs (provisional). When the last bond holds a multiplet, `mps_inner` sums
-  over its states and normalised quantities are those of one state. Dense results are unchanged
-  bit for bit.
+  over its states and normalised quantities are those of one state.
 - `symmetric_backend.save_mps` and `load_mps`: a symmetric MPS in one `.npz` (buffers, leg
   spaces, symmetry), loaded onto any dense backend (provisional).
 - `dmrg_excited` takes block and symmetric MPOs (provisional): `charge=` or a block
@@ -54,20 +55,59 @@ in Python's form for pre-releases (`0.2.0rc1`).
   off by default); `info` gains `converged`, `cut`, `expand` (0), `sweep_s`, `wall_s`,
   `max_bond`, `max_bond_dense`, and on block and symmetric tensors `charge` and `last_bond`.
   `DMRGExcitedOptions().eig_max_iter` is now `None`: 100 on dense MPOs, as before, and
-  min(block size, max(200, 4 chi)) on block and symmetric ones. Dense results are unchanged
-  bit for bit.
+  min(block size, max(200, 4 chi)) on block and symmetric ones.
 
 ### Changed
 
 - Development, CI and the documentation build use uv and a committed `uv.lock`; `pip install
   tnkit` is unchanged.
-- On GPUs, symmetric tensors build their recoupling maps on the device: a symmetric TDVP step
-  at bond dimension 512 ran about 1.9x faster on a MIG slice, with identical results.
+- On GPUs, symmetric tensors build their recoupling maps on the device, with identical results.
+- `TorchBackend("cuda")` (and `get_backend("torch-cuda")`) binds to the CUDA device that is
+  current when it is built, `cuda:<index>`, instead of following later `torch.cuda.set_device`
+  calls. CUDA-graph capture (`graph='auto'` and `'on'`) accepts a backend on the current device.
+- `reorth='periodic'` raises and warns with a reworded message (it loses orthogonality on long
+  local solves).
+- `tdvp1_evolve`, `tdvp2_evolve` and `TDVPEvolver` raise `ValueError` for a `meas_every` that is
+  not an integer >= 1 (0 raised `ZeroDivisionError` when `measure` was given).
+- `dmrg_excited` and `dmrg_tower` warn (`DeflationWarning`, a `RuntimeWarning`) when the state
+  found has |<psi_i|psi>|^2 > 0.5 with a previous state, which happens when `penalty` is below
+  the gap to the level sought; the default penalty is unchanged.
+- `tnkit.dmrg_excited` no longer re-exports `symmetry_of` (a private helper of
+  `tnkit._sparse`).
+- The symmetries guide moved from `user-guide/symmetries.html` to `user-guide/symmetries/`.
+- `ProductSymmetry.frobenius_schur` returns a float (complex for factors with complex phases)
+  instead of an int, and `ProductSymmetry` accepts factors of generic fusion.
+- Docstrings of the main entry points (`dmrg`, `dmrg_excited`, `tdvp1_evolve`, `tdvp2_evolve`,
+  `MPS`, `get_backend`, `idmrg`, `vumps`, the model builders, the observables, `to_block_mpo`,
+  `symmetric_mpo` and the symmetric `to_dense_mps`) have parameter and return sections, with
+  their conventions: exp(-i H dt) with hbar = 1, Pauli matrices in the models, sites from 0,
+  and SU(2) charges as twice the spin.
 
 ### Fixed
 
 - `TNKIT_CHECK=debug` no longer fails with `AttributeError` on block and symmetric tensors
   with torch buffers.
+- `TorchBackend("cuda")` (and `get_backend("torch-cuda")`) is on the indexed device its tensors
+  report (`cuda:<current device>`; `mps` is `mps:0`, and `cpu:<n>` is `cpu`), so it mixes with
+  backends built from a tensor's device. Symmetric tensors from the two raised "symmetric
+  tensors on devices cuda:0 and cuda", for instance in `mps_inner`, `mpo_expectation` and
+  `mpo_variance` without `be=` after a symmetric `dmrg`.
+- `Space` stores each sector as its symmetry's label, so `Space(SU2(), (0, 1.0), (1, 1))` is the
+  space of labels 0 and 1. A float sector gave a float `dim` and tensors whose `to_dense`
+  raised, and, since it hashes like the integer space, could stand in for it in the caches.
+- A real symmetric tensor times a complex scalar (`t * 1j`) is on a complex backend, so
+  `contract`, `to_dense` and `adjoint` work on it.
+- A malformed `TNKIT_SYMMETRIC_*`, `TNKIT_BLOCK_CACHE_MB` or `TNKIT_BLOCK_LABEL_CACHE_MB` cache
+  limit (for example `1G`, or `1.5` for the entry count `TNKIT_SYMMETRIC_RECENT_LAYOUTS`) warns
+  and keeps the default instead of breaking `import tnkit`.
+- The error for a real tensor that meets a complex recoupling matrix says that the tensor needs
+  complex data.
+- `idmrg` reports the right correlation length `xi`. Its transfer matrix did not contract the
+  physical index, and used one tensor whose two bonds are in different bases; it now uses the
+  two-site cell with the last two central Schmidt spectra. At g = 1.5 and chi = 16, `xi` was
+  1.17 and is now 2.39, as from `vumps` (1/ln g = 2.47).
+- `vumps` raises a clear `ValueError` for an MPO whose local dimension is not 2, instead of an
+  `einsum` error.
 
 ### Tests
 

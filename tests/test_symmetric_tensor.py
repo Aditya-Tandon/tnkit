@@ -23,8 +23,8 @@ from oracles.a4 import A4, A4ComplexBasis, A4RephasedSinglet
 from tnkit import blocks
 from tnkit.backend import NumpyBackend
 from tnkit.fusion_trees import fusion_trees, tree_tensor
-from tnkit.symmetric_tensor import (Space, SymmetricTensor, from_blocks, from_dense, norm,
-                                    random, vdot, zeros)
+from tnkit.symmetric_tensor import (Space, SymmetricTensor, contract, from_blocks, from_dense,
+                                    norm, random, vdot, zeros)
 from tnkit.symmetry import SU2, U1, ProductSymmetry, Zn
 
 TOL = 1e-12
@@ -312,6 +312,47 @@ def test_real_backend():
     sym, cod, dom = _case("A4", 7)
     with pytest.raises(TypeError, match="imaginary"):            # A4's trees are complex
         random(cod, dom, real, np.random.default_rng(2), sym=sym).to_dense()
+
+
+def test_sectors_are_stored_as_canonical_labels():
+    """A float or numpy sector is stored as the symmetry's label, so the space equals, and is
+    as usable as, the one built from that label."""
+    S = SU2()
+    V, W = Space(S, (0, 1.0), (1, 1)), Space(S, (np.int64(0), 1), (1, 1))
+    want = Space(S, (0, 1), (1, 1))
+    assert V == W == want and hash(V) == hash(want)
+    assert all(type(a) is int for a in V.sectors + W.sectors) and V.dim == 3
+    t = random([V, V], [], NP, np.random.default_rng(0), sym=S)
+    assert t.to_dense().shape == (3, 3) and random([want, want], [], NP, sym=S).shape == (3, 3)
+    P = ProductSymmetry((U1(), SU2()))
+    assert Space(P, ([0, 1.0],), (1,)).sectors == ((0, 1),)
+    with pytest.raises(ValueError):
+        Space(S, (0.5,), (1,))
+
+
+@pytest.mark.parametrize("backend", ["numpy", "torch"])
+def test_a_complex_scalar_promotes_a_real_tensor(backend):
+    if backend == "torch":
+        pytest.importorskip("torch")
+        from tnkit.backend import TorchBackend
+        real = TorchBackend("cpu", __import__("torch").float64)
+        to_np = real.to_numpy
+    else:
+        real, to_np = NumpyBackend(np.float64), np.asarray
+    sym, cod, dom = _case("SU2", 11)
+    t = random(cod, dom, NP, np.random.default_rng(3), sym=sym)
+    r = SymmetricTensor(cod, dom, real.array(t.data.real), real, sym)
+    n1, n2 = len(cod), len(dom)
+    R = np.asarray(to_np(r.to_dense()))
+    for u, c in ((r * 1j, 1j), (1j * r, 1j), (r / 1j, -1j), (r * 2.0, 2.0)):
+        assert u.be.is_complex == (c != 2.0) == (u.be is not r.be)
+        assert _err(to_np(u.to_dense()), c * R) < TOL
+        perm = list(range(n1, n1 + n2)) + list(range(n1))
+        assert _err(to_np(u.adjoint().to_dense()), np.conj(c) * R.transpose(perm)) < TOL
+        got = contract(r.adjoint(), u, range(n2, n1 + n2), range(n1))
+        want = c * np.tensordot(R.transpose(perm), R, (range(n2, n1 + n2), range(n1)))
+        assert _err(to_np(got.to_dense()), want) < TOL
+    assert (r * 2.0).be is r.be
 
 
 # --------------------------------------------------------------------------- torch

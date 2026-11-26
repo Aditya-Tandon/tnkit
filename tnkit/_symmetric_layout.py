@@ -24,7 +24,6 @@ from __future__ import annotations
 
 import itertools
 import math
-import os
 import threading
 import weakref
 from dataclasses import dataclass
@@ -33,7 +32,7 @@ from typing import Any, Dict, Tuple
 
 import numpy as np
 
-from ._bytecache import ByteCache, env_cache
+from ._bytecache import ByteCache, env_cache, env_number
 from .fusion_trees import FusionTree
 
 # Default limits, from the caches' use in two-site TDVP on two-flavour chains (U(1) x SU(2)):
@@ -45,8 +44,9 @@ STRUCTURE_CACHE = env_cache("TNKIT_SYMMETRIC_STRUCTURE_CACHE_MB", 512)    # tree
 INDEX_CACHE = env_cache("TNKIT_SYMMETRIC_INDEX_CACHE_MB", 1024)           # maps on the host
 INDEX_DEVICE_MB, INDEX_CUDA_FRACTION = 2048, 0.1
 DEVICE_INDEX_CACHE = env_cache("TNKIT_SYMMETRIC_DEVICE_INDEX_CACHE_MB", INDEX_DEVICE_MB)
+_RECENT = env_number("TNKIT_SYMMETRIC_RECENT_LAYOUTS", 32768, integer=True)
 RECENT_LAYOUTS = env_cache("TNKIT_SYMMETRIC_RECENT_LAYOUTS_MB", 256,      # kept alive by uid
-                           int(os.environ.get("TNKIT_SYMMETRIC_RECENT_LAYOUTS", 32768)))
+                           32768 if _RECENT is None else _RECENT)
 
 
 def backend_key(be):

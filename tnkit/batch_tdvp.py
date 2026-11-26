@@ -1,127 +1,82 @@
-"""Batched TDVP — evolve k independent MPS of identical geometry as ONE tensor program.
+"""Batched TDVP: evolve k independent MPSs of the same geometry as one tensor program.
 
-WHY THIS EXISTS. At small bond dimensions (chi <= 48, d = 2) a TDVP
-site-step is not arithmetic-bound, it is *launch*-bound: the measured price of a
-dispatched tensor operation is ~22 us against arithmetic that is tens of kFLOP, and
-capturing the step as a CUDA graph removes the asking but not the doing -- 71-80% of a
-captured site-step is the captured loop's own execution time at tiny sizes. Both numbers
-say the same thing: the card is mostly idle, and the way to fill it is not to launch
-fewer kernels but to give each kernel more work.
+At small bond dimension (chi up to a few tens, d = 2) a TDVP site step on a GPU is bound by
+kernel launches, not arithmetic, and even a CUDA graph leaves the device mostly idle. Giving
+each kernel more work fills it: k states of the same geometry (same site count, bond cap, dt
+and step count, differing in couplings, fields or initial states) are stacked on a leading
+axis, and every contraction, QR, SVD and Krylov step becomes one batched call on k times the
+data. The number of kernels per site step is unchanged, so the cost per state falls roughly
+as 1/k until the device saturates.
 
-A scan is always many independent legs of identical geometry -- same site count, same
-bond cap, same dt, same step count -- differing only in couplings, packet momenta and
-field. Stack k of them on a LEADING axis and every contraction, QR, SVD and Krylov step
-becomes one batched call on k times the data. The kernel COUNT per site-step is unchanged;
-the work per kernel is k times larger. So per-leg cost should fall as ~1/k until the
-device saturates, and where it flattens is a measurement, not a guess.
-
-WHERE THE LEG AXIS GOES. Every tensor carries it first::
+The leg axis comes first on every tensor::
 
     M[i] : (k, left_bond, phys, right_bond)       site tensors
     L[i] : (k, bra, mpo, ket)                     left environments
     R[i] : (k, bra, mpo, ket)                     right environments
     W[i] : (k, mpo_left, mpo_right, phys, phys')  the per-leg MPO
 
-so leg n's slice `M[i][n]` is exactly the tensor the unbatched integrator would hold, in
-tnkit's own index order (see `tnkit.mps.MPS`). The contractions below are the unbatched
-ones of `tnkit._dmrg` with an `n` prepended to every index group; the QR, SVD and
-eigendecomposition are `linalg` calls on a leading batch axis.
+so leg n's slice `M[i][n]` is the tensor the unbatched integrator would hold, in tnkit's index
+order (see `tnkit.mps.MPS`). The contractions are those of `tnkit._dmrg` with an `n` prepended
+to every index group; QR, SVD and eigendecomposition are `linalg` calls on a leading batch axis.
 
-THE KRYLOV SCHEDULE IS FIXED, AND THAT IS WHAT MAKES BATCHING POSSIBLE. The adaptive
-solver stops when a per-block error estimate falls below tolerance, so k legs would stop
-at k different iteration counts and the batched loop would have no shape. The fixed-depth
-solver runs the same number of iterations for every block by construction, agrees with the
-adaptive solver to ~3e-12 -- closer than an over-converged control solver sits to it --
-and pays for that with extra matvecs whose price is exactly what batching cuts. Its
-breakdown handling needs no host branch, so the batched loop has none either: `guard_denom`
-divides safely, and a broken-down direction couples into the projected tridiagonal through
-its own off-diagonal, which suppresses it to the order it broke down at.
+The Krylov schedule is fixed. The adaptive solver stops when a per-block error estimate falls
+below tolerance, so k legs would stop at k different iteration counts. The fixed-depth solver
+runs the same number of iterations for every block, agrees with the adaptive solver to about
+3e-12 at small sizes, and pays with extra matvecs, which batching makes cheap. Its breakdown
+handling needs no host branch: `guard_denom` divides safely, and a broken-down direction
+couples into the projected tridiagonal through its own off-diagonal, which suppresses it.
 
-ONE SCHEDULE, K DEMANDS. A fixed `m` is only as safe as the calibration that froze it, and
-legs are defined by this module to differ in exactly the couplings, fields and momenta that
-change a leg's own Krylov demand -- so `krylov_m="auto"` calibrates against EVERY leg, not
-leg 0 (`_calibrate_krylov_m`), and takes the max. That still does not make the fixed
-schedule provably safe for the whole trajectory: a leg's demand can drift as the state
-evolves, past whatever the entry-state calibration measured. So every fixed-schedule solve
-also carries the standard a-posteriori Krylov error estimate (Saad 1992, the same estimator
-`eigensolver.lanczos_expm` uses for its own adaptive stop) computed from quantities the
-batched loop already has -- the last Lanczos beta and the last row of the projected
-tridiagonal's exponential -- and the per-step, per-leg runtime guard in `_run` checks it
-against `krylov_tol`. An under-resolved leg grows `m` for the whole batch on the next step
-(bounded by `krylov_m_max`), or the run stops with a loud error naming the leg: never a
-quiet, finished, wrong trajectory.
+A fixed `m` is only as safe as its calibration, and the legs differ in exactly what changes
+their Krylov demand, so ``krylov_m="auto"`` calibrates against every leg and takes the largest
+(`_calibrate_krylov_m`). A leg's demand can still grow as its state evolves, so every
+fixed-schedule solve also carries the a-posteriori Krylov error estimate (Saad 1992, as in
+`eigensolver.lanczos_expm`), from the last Lanczos beta and the last row of the exponential
+of the projected tridiagonal, and `_run` checks it per step and per leg against `krylov_tol`.
+An under-resolved leg raises `m` for the whole batch from the next step (up to
+`krylov_m_max`), or the run stops with an error naming the leg.
 
-RAGGED BOND DIMENSIONS -- the honest problem. Legs of identical geometry do NOT have
-identical bond dimensions while chi is still growing: a two-site sweep with a
-discarded-weight budget keeps a different rank in each leg at each bond, and shapes that
-differ cannot be stacked. Three strategies are implemented and all three are EXACT; which
-one is cheapest before saturation is a measurement, not a preference.
+Ragged bond dimensions. While chi is still growing, legs of the same geometry have different
+bond dimensions (a two-site sweep with a discarded-weight budget keeps a different rank in each
+leg), and tensors of different shapes cannot be stacked. Three exact strategies:
 
-  ragged='pad' (the default) -- hold every stacked bond at the WIDEST rank the cap and the
-      chain geometry could ever put there, min(chi_max, d^i * outer_left,
-      d^(N-i) * outer_right), and carry a per-leg RANK MASK for the rest. The stacked
-      shapes are then fixed for the whole run: no bond ever changes size, so one shape
-      class covers the growth phase and the saturated phase alike and nothing would have to
-      be re-planned, re-allocated or re-captured mid-run IF this module captured anything --
-      see EAGER, NOT CAPTURED below. It pays for the fixed shape in arithmetic -- a bond
-      holding rank 12 is computed at width 48 -- which is the trade to measure.
+  ragged='pad' (the default): hold every stacked bond at the widest rank the cap and the
+      chain geometry allow there, min(chi_max, d^i * outer_left, d^(N-i) * outer_right), with
+      a per-leg rank mask for the rest. The stacked shapes are fixed for the whole run, at the
+      cost of arithmetic on the padding (a bond of rank 12 is computed at width 48).
 
-  ragged='tight' -- pad only to the widest rank any leg ACTUALLY keeps at that bond on
-      that step, and re-cut it at every truncation. The wasted arithmetic is then only the
-      spread BETWEEN the legs rather than the distance to the cap, which is far less; the
-      price is that the stacked shapes move as the state grows, so allocations and any
-      shape-keyed plan a FUTURE capture layer built on this module would move too.
-      Identical trajectory, different bill.
+  ragged='tight': pad only to the widest rank any leg keeps at that bond on that step, and
+      re-cut at every truncation. Less wasted arithmetic (only the spread between legs); the
+      stacked shapes then change as the state grows. Same trajectory.
 
-EAGER, NOT CAPTURED. Every call in this module -- every contraction, QR, SVD and Krylov
-step, for every ragged mode -- runs eagerly. There is no `torch.cuda.graph`, no
-`make_graphed_callables`, no capture of any kind anywhere in this file: the throughput
-numbers this module produces are timed against the ALREADY-CAPTURED single-leg production
-path (`tnkit.tdvp`, `graph=...`) as the honest baseline, not against another capture. The
-'shape class' language above describes what would make a FUTURE combination of batching
-and capture possible -- one captured graph per (evolver, ragged, geometry, m) shape instead
-of one per leg -- it is not a claim that this module builds or exercises that combination
-itself.
+  ragged='group': partition the legs by their full bond profile on entry and step each group
+      as its own batch. It degrades to serial when the entry profiles all differ, and
+      raggedness that develops later inside a group is carried by the masks as above. Serial
+      steps through the growth phase followed by a batched run once every leg has reached the
+      cap need no mode of their own: one serial call, then one batched call.
 
-  ragged='group' -- partition the legs by their full bond profile ON ENTRY and step each
-      group as its own batch. Trivially exact, and it degrades to serial exactly when the
-      entry profiles disagree. It is a partition of the ENTRY state only: raggedness that
-      develops later inside a group is carried by the same masks as above. The temporal
-      version of the same idea -- stay serial through the growth phase and batch only once
-      every leg has reached the cap -- needs no mode of its own, being one serial call
-      followed by one batched one.
+Everything here runs eagerly; nothing is captured as a CUDA graph.
 
-Why the mask is not optional, and why it is what makes padding exact. Zero-padding a bond
-changes nothing about the state -- a zero Schmidt value contributes nothing. But the QR
-that moves the orthogonality centre returns an ARBITRARY orthonormal completion in the
-padded columns, and the environment built from those columns is not zero; the bond solve
-that follows then couples the true block to the padded one, and the leg has silently been
-promoted onto a larger manifold. That is a different (finer) trajectory, not the one the
-serial run takes. Zeroing the padded columns of Q, the padded rows of the bond matrix, and
-the padded Schmidt values restores the block structure: every environment stays exactly
-zero outside the true rank, every operand the true block sees is the operand it would have
-seen alone, and the only residual difference is the ORDER of summation inside contractions
-whose extra terms are exact zeros -- the measured reduction-order floor,
-four orders below any tolerance here.
+The mask is what makes padding exact. Zero-padding a bond changes nothing about the state (a
+zero Schmidt value contributes nothing). But the QR that moves the orthogonality centre returns
+an arbitrary orthonormal completion in the padded columns, the environment built from them is
+not zero, and the bond solve that follows couples the true block to the padding, so the leg
+would move onto a larger manifold and follow a different trajectory. Zeroing the padded
+columns of Q, the padded rows of the bond matrix and the padded Schmidt values keeps every
+environment exactly zero outside the true rank, so every operand the true block sees is the
+one it would see alone. The only remaining difference is the order of summation inside
+contractions whose extra terms are exact zeros.
 
-WHAT IS NOT CLAIMED. This is a second evolver, not a change to the first: `tdvp1_evolve`
-and `tdvp2_evolve` are untouched and remain the reference. The batched path uses the
-fixed-depth Krylov solver, so it is not bit-identical to the adaptive production path and
-is not meant to be. Two different comparisons, with different numbers:
+Accuracy. `tdvp1_evolve` and `tdvp2_evolve` are unchanged and remain the reference. The
+batched path uses the fixed-depth Krylov solver, so it does not reproduce the adaptive path bit
+for bit. Two comparisons apply:
 
-1. Batched against the SAME fixed-schedule code run one leg at a time (the question "does
-   batching change the solver's own answer"). Measured at full collision scale (N = 501, chi 48,
-   k = 8): state infidelity <= 2.4e-14; derived quantities are less forgiving because they
-   subtract large numbers -- window energy and local observables deviate by up to ~1e-11
-   relative and the worst two-site scattering amplitude by ~1.4e-10, i.e. a 1e-12 target on
-   derived quantities is missed by roughly 7-9x while the states agree to round-off.
+1. Batched against the same fixed-schedule code run one leg at a time: states agree to
+   rounding (infidelity around 1e-14), while derived quantities that subtract large numbers
+   (window energies, local observables, scattering amplitudes) agree only to about 1e-11 to
+   1e-10 relative.
 
-2. Fixed-depth Krylov against the adaptive solver the production integrators use (the
-   question "does the fixed schedule match the adaptive one"). That was measured
-   separately, on the fixed-depth solver alone: ~3e-12 at small sizes, growing to ~1e-8
-   at N = 48, chi = 32 against a measured floor of ~2e-7 there.
-
-A caller choosing this module should know which of the two they are relying on.
+2. The fixed-depth solver against the adaptive one: about 3e-12 at small sizes, growing to
+   about 1e-8 at N = 48, chi = 32.
 """
 from __future__ import annotations
 import dataclasses
@@ -186,7 +141,7 @@ class BatchTDVPOptions:
     evolver      : '1tdvp' (bond-preserving) or '2tdvp' (grows bonds, truncates at chi_max).
     krylov_m     : the FIXED Krylov dimension, or 'auto' to calibrate it from one metered
                    adaptive sweep run on EVERY leg -- the largest dimension any of those
-                   sweeps needed, plus the project's standing additive headroom of two. Not
+                   sweeps needed, plus an additive headroom of two. Not
                    leg 0 alone: legs are defined by this module to differ in exactly the
                    couplings, fields and momenta that change a leg's own Krylov demand, so
                    the max is taken over all of them (`_calibrate_krylov_m`). Whatever `m`
@@ -308,7 +263,7 @@ def lanczos_expm_fixed_batched(matvec, v, tau, be, m, expm_where="eigh", resid_l
     `(k, j, n) @ (k, n, 1)` -- so the k legs' re-orthogonalisations are ONE call rather
     than k, and the k projected tridiagonals are exponentiated in one batched
     eigendecomposition. The kernel count per solve is therefore identical to the unbatched
-    solver's; only the work per kernel grows, which is the whole hypothesis.
+    solver's; only the work per kernel grows.
 
     `resid_log`, when given a list, gets one (k,) DEVICE tensor appended: the Saad (1992)
     a-posteriori residual estimate for this solve, `|beta_{m+1}| * |tau| * |[exp(tau T_m)]
@@ -734,12 +689,12 @@ def _calibrate_krylov_m(states, mpos, L0s, RNs, dt, backend, evolver, chi_max=No
     needed anywhere in the sweep -- max, not mean, because the schedule has to satisfy the
     hardest block and a mean over ~4N blocks is dominated by the easy bulk. Run over ALL
     legs, not leg 0 alone: legs are defined by this module to differ in exactly the
-    couplings, fields and momenta that change a leg's own Krylov demand, so leg 0's measured
-    demand does not structurally upper-bound leg 5's. This is a PREROLL cost -- k adaptive
+    couplings, fields and momenta that change a leg's own Krylov demand, so one leg's
+    demand does not bound another's. This is a PREROLL cost -- k adaptive
     single-step sweeps run once, before the batched loop starts -- not a per-step cost, so
     it stays cheap relative to the n_steps-long batched trajectory that follows.
 
-    Adds the project's standing ADDITIVE headroom of two to the max over legs. Each sweep
+    Adds an additive headroom of two to the max over legs, as the unbatched fast path does. Each sweep
     runs its leg through the ordinary integrator with a step-size controller pinned to no
     change at all, whose only job here is to fill the Krylov meter; it does not mutate the
     caller's states.
@@ -890,9 +845,8 @@ def evolve_batch(states: Sequence[MPSLike], hams: Any, dt: float, n_steps: int,
     stats["fill"] = float(np.mean(fills)) if fills else 1.0
     stats["disc"] = float(np.mean(discs)) if discs else 0.0
     # The per-leg discarded-weight ledger, in the order the caller gave the states. `disc`
-    # above is its mean and is kept because callers already read it. A health clause is written
-    # per arm -- one leg's drift against the weight THAT leg threw away -- so a batch reporting
-    # only the mean would make a batched arm unscoreable against a serial one.
+    # above is its mean. Each leg's drift is to be compared with the weight that leg threw
+    # away, which the mean alone does not allow.
     stats["disc_per_leg"] = [float(x) for x in disc_leg_all]
     # The a-posteriori residual estimate the runtime guard checked every step, maxed over
     # steps, ONE NUMBER PER LEG -- so a caller can see how close the fixed schedule ran to
@@ -999,9 +953,8 @@ def _run(B, dt, n_steps, m, o, leg_ids, m_max):
     within the group).
 
     Returns `(records, fill, disc_leg, leg_max_resid, m)`: `disc_leg` is the cumulative
-    discarded weight PER LEG -- a health clause is written per arm, comparing one leg's drift
-    against the weight THAT leg threw away, so a batch reporting only the mean would make a
-    batched arm unscoreable against a serial one -- `leg_max_resid` is the per-leg
+    discarded weight per leg (a leg's drift is to be compared with the weight that leg threw
+    away, which a mean over legs does not allow); `leg_max_resid` is the per-leg
     (group-local order) max residual observed over the whole run, and the returned `m` is
     whatever it grew to by the end.
     """

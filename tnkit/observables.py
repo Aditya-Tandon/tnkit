@@ -15,8 +15,8 @@ contraction runs on that device, and only the *result* crosses to the host. That
 transfer is one call per routine, not one per site -- the per-site scalars are
 stacked on-device first (`Backend.stack`) so a length-N profile costs a single
 synchronisation. The one other host round-trip is the Schmidt spectrum in the
-entropy routines: chi floats per bond, converted deliberately so the entropy
-arithmetic is bit-identical to the numpy path.
+entropy routines: chi floats per bond, so the entropy arithmetic is that of the
+numpy path.
 
 Returns are always numpy (or Python) scalars and arrays. Measurements are small
 and end up in a file or a fit, so a device-resident result would only push the
@@ -111,7 +111,27 @@ def _profile(be: Any, vals: Sequence[Tensor]) -> np.ndarray:
 
 def local_expectations(mps: MPSLike, op: np.ndarray,
                        canon: Optional[MPSLike] = None) -> np.ndarray:
-    """<op_i> at every site for a one-site operator `op` (d*d). Returns array[N]."""
+    """Expectation value of a one-site operator at every site.
+
+    Parameters
+    ----------
+    mps : sequence of tensors
+        A dense MPS (rank-3 tensors ``(left, phys, right)``) on any backend; it need not be
+        normalised or canonical, and is not modified. Block and symmetric states raise
+        `TypeError`: convert them with their ``to_dense_mps``.
+    op : ndarray
+        The d x d operator, in the basis of the physical index (for example ``SZ``, the Pauli
+        matrix, whose expectation is twice that of S^z).
+    canon : sequence of tensors, optional
+        A right-canonical, normalised copy of `mps` from an earlier call, to skip the
+        canonicalisation.
+
+    Returns
+    -------
+    ndarray, shape (N,)
+        The real part of ``<op_i>`` for sites i = 0 .. N-1, on the host (exact for a
+        Hermitian `op`).
+    """
     be = _backend_for(mps)
     M = _canon(mps, be) if canon is None else canon
     op = be.array(op)
@@ -244,24 +264,27 @@ def _structure_factor_pairwise(mps: MPSLike, op: np.ndarray) -> Tuple[float, flo
 
 
 def structure_factor(mps: MPSLike, op: np.ndarray) -> Tuple[float, float]:
-    """Squared order parameter M^2 = (1/N^2) sum_ij <op_i op_j> and the structure
-    factor S = N^2 M^2 = sum_ij <op_i op_j>. Returns (M2, S).
+    """The structure factor of a one-site operator and the squared order parameter.
 
-    Diagonal terms <op_i^2> are measured explicitly. The off-diagonal double sum
-    is accumulated in ONE left-to-right sweep rather than measured pair by pair:
-    carrying
+    ``S = sum_ij <op_i op_j>`` over all sites (diagonal terms included) and
+    ``M2 = S / N^2``. The off-diagonal sum is accumulated in one left-to-right sweep: carrying
+    ``D_k = sum_{i<k}`` (the environment with op applied at site i, propagated to k) alongside
+    the norm environment gives ``sum_{i<j} <op_i op_j>`` in O(N chi^3) instead of the
+    O(N^2 chi^3) of pairwise measurement. It matches the pairwise sum to rounding.
 
-        D_k = sum_{i<k} (environment with op applied at site i, propagated to k)
+    Parameters
+    ----------
+    mps : sequence of tensors
+        A dense MPS, as in `local_expectations`.
+    op : ndarray
+        The d x d operator (for the TFIM order parameter, ``SX``).
 
-    alongside the plain norm environment turns sum_{i<j}<op_i op_j> into O(N)
-    transfer applications instead of O(N^2). Same estimator, same sum -- only the
-    order of accumulation differs, so it matches the pairwise reference to
-    round-off (asserted in tests) rather than bit-exactly.
-
-    This matters: the pairwise form costs O(N^2 chi^3), which at N = 600,
-    chi = 192 is ~1 h per call -- longer than the DMRG solve it is measuring.
-    The single canonical form is shared with the diagonal pass, so the whole
-    routine does one canonicalisation sweep, not two.
+    Returns
+    -------
+    M2 : float
+        ``S / N^2``.
+    S : float
+        ``sum_ij <op_i op_j>``.
     """
     be = _backend_for(mps)
     N = len(mps)
@@ -280,9 +303,8 @@ def structure_factor(mps: MPSLike, op: np.ndarray) -> Tuple[float, float]:
         D = (be.einsum("ef,esg,fsh->gh", D, A, be.conj(A))
              + be.einsum("ab,ase,st,btf->ef", Lnorm, A, opd, be.conj(A)))
         Lnorm = be.einsum("ab,asc,bsd->cd", Lnorm, A, be.conj(A))
-    # One transfer for the whole sweep, then the ORIGINAL accumulation order on
-    # the host: summing the profile with np.sum instead would reassociate the
-    # additions and move the last digits of a published number.
+    # One transfer for the whole sweep, then a sequential sum on the host: np.sum would
+    # reassociate the additions and change the last digits.
     for v in _profile(be, diag):
         total += 2.0 * float(v)
     return total / N**2, total
@@ -293,9 +315,8 @@ def _schmidt_sweep(M: MPSLike, be: Any, upto: int) -> Iterator[np.ndarray]:
 
     The shared core of `entanglement_entropy` and `all_entropies`: carry the
     orthogonality centre left to right, and the singular values at each cut fall
-    out of the SVD that moves it. Yields host (numpy) spectra -- chi floats per
-    bond, the one deliberate transfer in the entropy path, which keeps the
-    entropy arithmetic bit-identical to what the numpy-only version computed.
+    out of the SVD that moves it. Yields host (numpy) spectra, chi floats per
+    bond, so the entropy arithmetic is the same on every backend.
     """
     d = int(M[0].shape[1])
     carry = None
@@ -319,13 +340,27 @@ def _entropy(s: np.ndarray) -> float:
 
 def entanglement_entropy(mps: MPSLike, bond: int,
                          canon: Optional[MPSLike] = None) -> float:
-    """Von-Neumann entropy S = -sum lambda^2 ln lambda^2 of the Schmidt spectrum at
-    `bond` (the cut between site bond-1 and site bond).
+    """Von Neumann entropy of one bond, ``S = -sum_k lambda_k^2 ln lambda_k^2`` over its
+    Schmidt values (natural log; the spectrum is normalised here).
 
-    For a whole profile call `all_entropies` instead: this routine sweeps from
-    site 0 to `bond` every time, so N calls cost O(N^2 chi^3). `canon` shares one
-    right-canonical copy across calls and removes the re-canonicalisation, but
-    not the quadratic sweep.
+    Parameters
+    ----------
+    mps : sequence of tensors
+        A dense MPS, as in `local_expectations`.
+    bond : int
+        The cut between sites ``bond - 1`` and ``bond``, ``1 <= bond <= N - 1``.
+    canon : sequence of tensors, optional
+        A right-canonical, normalised copy of `mps`, to skip the canonicalisation.
+
+    Returns
+    -------
+    float
+        The entropy, >= 0.
+
+    Notes
+    -----
+    Each call sweeps from site 0 to `bond`, so a whole profile from this function costs
+    O(N^2 chi^3); `all_entropies` gives it in one sweep.
     """
     be = _backend_for(mps)
     M = _canon(mps, be) if canon is None else canon
@@ -339,11 +374,10 @@ def all_entropies(mps: MPSLike, canon: Optional[MPSLike] = None) -> np.ndarray:
     """Every bond entropy in ONE left-to-right sweep. Returns array[N-1].
 
     `entanglement_entropy(mps, bond)` re-canonicalises and then sweeps from site 0
-    to `bond`, so asking for the full profile costs O(N^2 chi^3) -- fine at the
-    N <= 64 it was written for, hours at N = 600. The Schmidt spectrum at every
-    bond falls out of a single sweep: right-canonicalise once, carry the centre
-    left to right, and read the singular values at each cut. Identical arithmetic,
-    identical output, O(N chi^3): 33 s against hours at N = 600, chi = 192.
+    to `bond`, so asking for the full profile costs O(N^2 chi^3). The Schmidt
+    spectrum at every bond falls out of a single sweep: right-canonicalise once,
+    carry the centre left to right, and read the singular values at each cut. The
+    same arithmetic and output, in O(N chi^3).
 
     Checked bond-by-bond against `entanglement_entropy` in
     `tests/test_observables_backend.py::test_all_entropies_bit_identical_to_per_bond`.

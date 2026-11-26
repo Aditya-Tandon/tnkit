@@ -41,7 +41,7 @@ from .tdvp import TDVPOptions, tdvp1_evolve, tdvp2_evolve  # noqa: F401
 from .tebd import tebd_evolve  # noqa: F401
 from ._vumps import UniformMPS, VUMPSOptions, vumps  # noqa: F401
 
-#: The names `tnkit.__init__` re-exports, minus the module-name collisions.
+#: The names `tnkit.__init__` re-exports, minus those that clash with module names.
 CURATED = [
     # solvers
     "dmrg", "dmrg_excited", "idmrg", "vumps", "tebd_evolve",

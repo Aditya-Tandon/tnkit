@@ -1,92 +1,64 @@
-"""Adaptive active-window trimming for 1TDVP collision evolution (vacuum skip).
+"""Adaptive active-window trimming for one-site TDVP of wave packets in a window (vacuum skip).
 
-WHY THIS EXISTS. A two-packet collision window (`tnkit.window`) embeds two wave packets in
-an otherwise infinite, stationary vacuum background: at N_s sites, only the O(sigma) region
-around each packet -- and whatever the light cone has swept since -- is not literally the
-background tensor AL or AR. Every site-step 1TDVP spends on a site that is STILL the vacuum
-tensor is wasted: the vacuum is a stationary state of the windowed problem (that is exactly
-what makes the fixed boundary environments FL/FR of `tnkit.window` valid at all), so evolving
-a vacuum site changes nothing but pays a full Krylov solve for the privilege.
+A window on an infinite background (`tnkit.window`) can hold localised wave packets in an
+otherwise stationary vacuum: only the region around each packet, and whatever its light cone
+has reached, differs from the background tensors AL and AR. The vacuum is stationary for the
+windowed problem (which is what makes the fixed boundary environments FL/FR valid), so a
+one-site TDVP step on a site that is still the vacuum tensor changes nothing but costs a full
+Krylov solve.
 
-THE MECHANISM. Maintain an ACTIVE half-open interval [lo, hi) of the N_s site indices. Only
-sites inside it are ever passed to `tdvp1_evolve`; sites outside are left untouched in the
-Python list, so they stay bit-for-bit whatever they were converted from -- which is correct
-PROVIDED they started out as exact copies of AL (left of lo) or AR (right of hi), the same
-precondition `tnkit.window.grow_window` already relies on.
+Mechanism. Keep an active half-open interval [lo, hi) of the N_s sites. Only sites inside it
+are passed to `tdvp1_evolve`; sites outside are left untouched, so they stay whatever they
+were, which is correct provided they started as exact copies of AL (left of lo) or AR (right
+of hi), the precondition `tnkit.window.grow_window` also relies on.
 
-TWO DIFFERENT ENVIRONMENTS ARE NEEDED AT THE CUT, AND CONFLATING THEM IS THE BUG THIS MODULE
-WAS REWRITTEN TWICE TO AVOID.
+Two different environments are needed at the cut:
 
-  1. The MPO (energy) environment TDVP needs as `L0`/`RN` for the active slice. FL/FR
-     themselves are only correct here when the frozen prefix/suffix carries the vacuum's own
-     bond dimension all the way to the cut -- true for a plain `tnkit.window.build_window`
-     construction, but NOT for a packet/reference ansatz that represents the WHOLE window,
-     including sites that are still exactly vacuum, at an elevated, uniform bond dimension (an
-     "upper-triangular 3-block" finite-state machine spanning the whole chain). Handing
-     `tdvp1_evolve` `L0=FL` directly there is a SHAPE ERROR. `_propagate_left`/`_propagate_right`
-     fix this by contracting FL/FR through the frozen prefix/suffix with the ENERGY recursion
-     (`tnkit._dmrg.update_left_env` /
-     `update_right_env`) -- exactly the environment the untrimmed sweep would itself have built
-     on its way to the cut, since those sites are (by the trim invariant) exactly what it would
-     have found there too.
+  1. The MPO (energy) environment that TDVP needs as `L0`/`RN` for the active slice. FL/FR
+     themselves are right only when the frozen prefix and suffix carry the vacuum's own bond
+     dimension up to the cut: true for a plain `tnkit.window.build_window` state, but not for
+     an ansatz that represents the whole window, vacuum sites included, at a larger uniform
+     bond dimension (an upper-triangular three-block automaton over the chain); there
+     ``L0=FL`` does not even have the right shape. `_propagate_left`/`_propagate_right`
+     contract FL/FR through the frozen prefix and suffix with the energy recursion
+     (`tnkit._dmrg.update_left_env`, `update_right_env`), which gives the environment the
+     untrimmed sweep would have built on its way to the cut.
 
-  2. The NORM (bra-ket, no MPO leg) environment the DIAGNOSTIC needs to read a physically
-     correct `<op_j>` at sites near the cut. `tnkit.window.window_expectations` closes a window
-     with an IDENTITY at the true edges (0, N_s) -- correct there, because the semi-infinite
-     background is built from properly canonical AL/AR. Naively reusing that identity as the
-     closure for the ACTIVE SLICE's own edges (lo, hi) is a DIFFERENT bug from (1), and a more
-     insidious one: it does not crash, it silently overweights sites near the cut, and on the
-     "cfix" ansatz's elevated bond dimension it manifested as `detect_occupied` finding
-     spurious deviation immediately outside every active window, growing it to the full chain
-     in one step regardless of where the physics actually was. The fix is the same idea as (1)
-     applied to the norm recursion instead: `_prefix_norm_env`/`_suffix_norm_env` propagate an
-     IDENTITY seeded at the TRUE edges through the frozen prefix/suffix with the NORM recursion,
-     and `detect_occupied` closes the active slice with THAT, not with a fresh identity.
+  2. The norm environment (bra-ket, no MPO leg) that the occupation check needs to read the
+     right `<op_j>` near the cut. `tnkit.window.window_expectations` closes a window with an
+     identity at the true edges (0, N_s), which is right there because the semi-infinite
+     background is canonical. An identity at the active slice's own edges (lo, hi) is not:
+     it overweights sites near the cut, and on an ansatz with a larger bond dimension it makes
+     `detect_occupied` see spurious deviations just outside the window, which then grows to the
+     whole chain. `_prefix_norm_env`/`_suffix_norm_env` propagate an identity from the true
+     edges through the frozen prefix and suffix with the norm recursion, and `detect_occupied`
+     closes the slice with that.
 
-Both propagations are O(lo) / O(N_s - hi) cheap contractions -- no Krylov solve -- so they are
-detached from the saving the mechanism exists to buy, and `evolve_trimmed` caches all four
-(L0/RN energy environments, Lnorm/Rnorm norm environments) across calls, recomputing a side
-only when that side of the window actually moves.
+Both propagations are O(lo) and O(N_s - hi) contractions with no Krylov solve, and
+`evolve_trimmed` caches all four (L0/RN energy environments, Lnorm/Rnorm norm environments)
+across calls, recomputing a side only when that side of the window moves.
 
-A THIRD RULE, easy to miss for the same reason as (2): the active slice must be RE-CANONICALISED
-every time its own boundary moves, not just on the very first chunk `evolve_trimmed` ever runs.
-A slice cut from the middle of a larger mixed-canonical state is not itself properly canonical
-relative to L0_cur/RN_cur (only the WHOLE window, in the gauge `tnkit.window` prepares it in, is
-guaranteed that) -- and when the window WIDENS, the newly-absorbed sites are in exactly the same
-situation, even though earlier sites in the slice are still fine. Skipping this re-canonicalisation
-does not crash and does not show up on a short run; it accumulates into a real, non-machine-precision
-energy drift once several growth events have happened (this is what a several-step, several-growth
-test geometry catches and a one-shot-to-full-window geometry does not -- see
-`tests/test_trim.py::test_trim_matches_untrimmed_energy_and_observables`'s own note on why its
-geometry is sized the way it is).
+The active slice must be re-canonicalised every time its boundary moves, not only on the first
+chunk. A slice cut from a larger mixed-canonical state is not itself canonical relative to
+L0/RN (only the whole window, in the gauge `tnkit.window` prepares, is), and sites newly taken
+in when the window widens are in the same position. Without the re-canonicalisation the energy
+drifts once the window has grown several times.
 
-THE MARGIN. A Gaussian envelope of width sigma has weight exp(-x^2/(4 sigma^2)) at distance x
-from centre (the packet convention assumed here) --
-3e-4 of peak at x=4*sigma, 1e-8 at x=6*sigma -- so padding the detected occupied region by
-about 6 sigma leaves only an exponentially small, not-yet-negligible tail outside the active
-window, and a few correlation lengths on top absorbs the state's own equal-time correlations.
-`default_trim_margin` turns that into a site count; the two coefficients are the explicit,
-documented default this module ships, not a tuned constant.
+Margin. A Gaussian envelope of width sigma has weight exp(-x^2/(4 sigma^2)) at distance x from
+its centre (the packet convention assumed here): 3e-4 of peak at x = 4 sigma, 1e-8 at
+x = 6 sigma. Padding the occupied region by about 6 sigma leaves only an exponentially small
+tail outside the active window, and a few correlation lengths on top cover the state's own
+equal-time correlations. `default_trim_margin` turns this into a site count.
 
-WHY THIS IS OPT-IN, NOT A DEFAULT. Freezing a site is an approximation, not a no-op: a frozen
-site keeps exactly the tensor it started with, not the tensor the untrimmed sweep would have
-carried it to, so trimming changes the reported energy by some amount bounded by `threshold`
-(see `tests/test_trim.py::test_trim_matches_untrimmed_energy_and_observables` and its sibling
-recording test for measured sizes). That effect is REPRODUCIBLE -- run the same
-(threshold, margin, every) twice and it comes back identical -- but it is not yet ACCOUNTABLE:
-there is no known formula or diagnostic-derived correction that separates it, after the fact,
-from ordinary numerical drift the untrimmed evolution would also accumulate. A caller who
-needs to certify a run's energy error against some external tolerance therefore cannot simply
-subtract the trim's contribution back out; they can only bound it, empirically, in advance.
-Until that separation exists, trimming is something a caller opts into deliberately, not
-something that runs underneath them by default.
+Trimming is opt-in. A frozen site keeps the tensor it started with, not the one the untrimmed
+sweep would have carried it to, so trimming changes the energy by an amount bounded by
+`threshold`. The change is reproducible (the same threshold, margin and `every` give the same
+result) but there is no correction that separates it from the ordinary drift of the untrimmed
+evolution; it can only be bounded in advance.
 
-WHAT THIS MODULE DELIBERATELY DOES NOT DO. The active window only ever GROWS. A packet that
-recedes back toward vacuum is detected (the diagnostic would report a smaller occupied region)
-but the window is not shrunk back down -- once a site has been included it stays active for the
-rest of the run. This is a strictly safe simplification (an active window that is larger than
-necessary costs time, never correctness) and it removes an entire class of bug (a shrink that
-clips a slow tail) from a mechanism whose whole point is to never introduce a reflection.
+The active window only grows. A packet that recedes toward vacuum is detected, but the window
+is not shrunk: a larger window costs time, never correctness, and a shrink could clip a slow
+tail.
 """
 from __future__ import annotations
 
@@ -188,7 +160,7 @@ def default_trim_margin(sigma: float, corr_len: float = 0.0, n_sigma: float = 6.
     x=4*sigma and 1e-8 at x=6*sigma, so 6 sigma is the point past which the packet's own
     envelope no longer carries a non-negligible tail. `n_xi=4.0` is a few correlation lengths
     of headroom for the state's equal-time correlations, which extend somewhat past the
-    envelope itself; `corr_len` defaults to 0 so a caller that has not measured `xi` still gets
+    envelope itself; `corr_len` defaults to 0, so a caller without `xi` still gets
     a usable (if less generous) margin from the packet width alone.
     """
     return int(math.ceil(n_sigma * float(sigma) + n_xi * float(corr_len)))
@@ -208,7 +180,7 @@ def detect_occupied(M: List[Any], be: Any, lo: int, hi: int, threshold: float,
     correct when lo == 0 and hi == len(M) (or the frozen exterior happens to be exactly
     isometric there, as it is for a plain `tnkit.window.build_window` state) -- `evolve_trimmed`
     always supplies the propagated ones for an interior cut. `background` is `<op>` in the pure
-    vacuum, measured ONCE by the caller rather than re-derived here.
+    vacuum, supplied by the caller.
 
     Returns `(c, c)` for some `lo <= c <= hi` (an empty, zero-width occupied range) if no site
     in [lo, hi) deviates -- the caller should then leave the window as it is.

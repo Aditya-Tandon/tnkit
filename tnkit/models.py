@@ -1,11 +1,13 @@
-"""Models: Transverse-Field Ising MPO + an independent exact-diagonalisation
-reference for validation.
+"""Spin-chain models: transverse-field Ising MPOs, related operators, and exact references.
 
-Convention (matches Fernandez-Losa thesis eq. 1.21):
-    H = - sum_i  sigma^x_i sigma^x_{i+1}  -  g sum_i sigma^z_i
-open boundary conditions, critical at g = 1.
+The transverse-field Ising model (TFIM), with Pauli matrices (not spin operators S = sigma/2):
 
-An MPO is stored as a list of rank-4 tensors W[site] with index order
+    H = - sum_i sigma^x_i sigma^x_{i+1}  -  g sum_i sigma^z_i  -  h sum_i sigma^x_i,
+
+open boundaries unless stated, critical at g = 1 for h = 0. Sites are numbered from 0, and
+the local basis is the sigma^z basis (|up>, |down>), with sigma^z = diag(1, -1).
+
+An MPO is a list of rank-4 tensors W[site] with index order
 (left_bond, right_bond, phys_out, phys_in) = (a, b, s, s').
 """
 from __future__ import annotations
@@ -46,13 +48,31 @@ def tfim_parity_mpo(N, g, lam):
 
 
 def tfim_mpo(N, g, h=0.0):
-    """TFIM MPO for  H = -sum sx_i sx_{i+1} - g sum sz_i - h sum sx_i.
-    The longitudinal field h (conjugate to the order parameter) is used for the
-    linear-response susceptibility chi = d<sx>/dh. Bulk (eq. 1.22, + field):
+    """MPO of the open transverse-field Ising chain.
+
+    H = - sum_i sigma^x_i sigma^x_{i+1} - g sum_i sigma^z_i - h sum_i sigma^x_i, with Pauli
+    matrices and open boundaries. Bulk tensor and boundary vectors L = (1, 0, 0),
+    R = (0, 0, 1)^T::
+
         W = [[ I,   sx,  -g sz - h sx],
              [ 0,    0,   -sx        ],
              [ 0,    0,    I         ]]
-    boundary vectors L=(1,0,0), R=(0,0,1)^T.
+
+    Parameters
+    ----------
+    N : int
+        Number of sites, >= 2.
+    g : float
+        Transverse field; the chain is critical at ``g = 1`` when ``h = 0``.
+    h : float, default 0.0
+        Longitudinal field, conjugate to the order parameter sigma^x; the susceptibility is
+        ``d<sigma^x>/dh``.
+
+    Returns
+    -------
+    list of ndarray
+        N complex tensors of shape ``(1, 3, 2, 2)``, ``(3, 3, 2, 2)`` (bulk) and
+        ``(3, 1, 2, 2)``, axes ``(left, right, out, in)``.
     """
     def bulk():
         W = np.zeros((3, 3, 2, 2), dtype=np.complex128)
@@ -76,12 +96,22 @@ def tfim_mpo(N, g, h=0.0):
 
 
 def magnetization_mpo(N, op=SX):
-    """MPO for the total magnetization operator M = sum_i op_i (bond dim 2).
+    """MPO of a total magnetisation ``M = sum_i op_i``, bond dimension 2.
 
-    Finite-state automaton: state 0 = "op not yet placed", state 1 = "placed".
-        W = [[ I, op],
-             [ 0, I ]]
-    left boundary starts in state 0, right boundary ends in state 1.
+    Bulk ``W = [[I, op], [0, I]]``: channel 0 means "op not yet placed" and 1 "placed"; the
+    left boundary starts in 0 and the right one ends in 1.
+
+    Parameters
+    ----------
+    N : int
+        Number of sites, >= 2.
+    op : ndarray, default SX
+        The 2 x 2 single-site operator (Pauli sigma^x by default, so M is not divided by 2).
+
+    Returns
+    -------
+    list of ndarray
+        N complex tensors, axes ``(left, right, out, in)``.
     """
     W = np.zeros((2, 2, 2, 2), dtype=np.complex128)
     W[0, 0] = I2
@@ -99,24 +129,34 @@ def magnetization_mpo(N, op=SX):
 
 
 def tfim_ring_mpo(N, g, h=0.0):
-    """PERIODIC (ring) mixed-field Ising MPO, same convention as :func:`tfim_mpo`:
+    """MPO of the periodic (ring) transverse-field Ising chain, in the convention of
+    `tfim_mpo`:
 
         H = - sum_{i=0}^{N-1} sx_i sx_{i+1 mod N} - g sum_i sz_i - h sum_i sx_i
 
-    The wrap bond (N-1, 0) is carried by one extra automaton channel that opens at
-    site 0 and closes at site N-1, so the MPO bond dimension is 4 rather than 3 and
-    the cost of a ring over an open chain is one extra channel, not a new ansatz.
-    The MPS stays open-boundary; the price is paid in entanglement (a cut of a ring
-    severs two bonds, so chi_ring ~ chi_open^2), which is affordable only when the
-    correlation length is short -- exactly the regime of the Ising scaling window
-    at small |h|, where 1/m1 is a few sites.
+    The wrap bond (N-1, 0) is one extra automaton channel that opens at site 0 and closes at
+    site N-1, so the MPO bond dimension is 4 rather than 3. The MPS stays open: a cut of the
+    ring severs two bonds, so the bond dimension needed is about the square of the open
+    chain's, which is affordable when the correlation length is short. A ring is what
+    finite-volume (Luscher) spectroscopy assumes: its quantisation condition
+    k L + 2 delta(k) = 2 pi n holds on a periodic ring, while an open chain adds boundary
+    reflection phases.
 
-    Needed for finite-volume (Luscher) spectroscopy: the quantisation condition
-    k L + 2 delta(k) = 2 pi n assumes a periodic ring, and an open chain instead
-    measures unknown boundary reflection phases.
+    Automaton channels: 0 = start, 1 = nearest-neighbour carry, 2 = wrap carry, 3 = done.
 
-    Automaton channels: 0 = START, 1 = nearest-neighbour carry, 2 = wrap carry,
-    3 = DONE.
+    Parameters
+    ----------
+    N : int
+        Number of sites, >= 3.
+    g : float
+        Transverse field.
+    h : float, default 0.0
+        Longitudinal field.
+
+    Returns
+    -------
+    list of ndarray
+        N complex tensors of bond dimension 4, axes ``(left, right, out, in)``.
     """
     if N < 3:
         raise ValueError("a ring needs N >= 3 (N = 2 would double-count the bond)")
@@ -232,10 +272,9 @@ def momentum_projected_ring_mpo(N, g, h=0.0, lam=0.0, lam_parity=0.0):
     Sizing lam: a nonzero-momentum state at P = 2 pi j / N is lifted by
     lam (1 - cos(2 pi j / N)) ~ lam (2 pi j / N)^2 / 2.  To clear a target window of
     height W above the ground state one needs lam > 2 W N^2 / (2 pi)^2 for j = 1, i.e.
-    lam grows as N^2.  The L0 check failed exactly here: at N = 10 with a window of
-    spread 6.12 and lam = 20, a P = 2 pi/10 state (lifted by only 3.82) slipped into the
-    tower.  Rather than pay an ever-larger lam, production runs use a moderate lam and
-    *filter* the returned tower on <T>, which is a cheap MPO expectation value.
+    lam grows as N^2: a moderate lam may let a low P != 0 state into a tower of levels. A
+    cheaper alternative to a large lam is a moderate one and a filter of the returned tower
+    on <T>, a cheap MPO expectation value.
     """
     parts = [tfim_ring_mpo(N, g, h)]
     if lam != 0.0:
@@ -357,18 +396,10 @@ def mpo_to_dense(mpo):
 
 
 def tfim_dense(N, g):
-    """Build H = -sum sx_i sx_{i+1} - g sum sz_i directly from its action on basis states.
-
-    PERFORMANCE, and why this was rewritten. The previous version formed each Pauli term as a full
-    2^N x 2^N matrix via kron and then MATRIX-MULTIPLIED pairs of them for the bond terms. That is
-    O(8^N): at N=12 it is ~7.5e11 flops and ~34 dense 268 MB temporaries, and at N=13 it is eight
-    times worse -- a dense ED at N=13 simply never returned. Fine at N <= 10, which is why it went
-    unnoticed.
-
-    Acting on basis states instead is O(N 2^N) with no temporaries:
-      * -g sum_i sz_i is DIAGONAL: sz_i |s> = (1 - 2 b_i(s)) |s>;
-      * -sum_i sx_i sx_{i+1} flips bits i and i+1, so it contributes -1 at row (s XOR mask_i).
-    The result is bit-identical to the old construction (validated at N = 8, 10 to 0.0).
+    """The dense open-chain TFIM Hamiltonian ``H = -sum sx_i sx_{i+1} - g sum sz_i``, built
+    from its action on basis states in O(N 2^N): -g sum_i sz_i is diagonal,
+    ``sz_i |s> = (1 - 2 b_i(s)) |s>``, and each bond term flips bits i and i+1. Site 0 is the
+    most significant bit. Returns a complex 2^N x 2^N array.
     """
     dim = 1 << N
     H = np.zeros((dim, dim), dtype=np.complex128)
@@ -386,7 +417,21 @@ def tfim_dense(N, g):
 
 
 def tfim_ground_energy(N, g):
-    """Exact ground-state energy via dense diagonalisation (N <= ~12)."""
+    """Exact ground-state energy of the open TFIM chain at h = 0, by dense diagonalisation
+    (`tfim_dense`); for N up to about 12.
+
+    Parameters
+    ----------
+    N : int
+        Number of sites, >= 2.
+    g : float
+        Transverse field.
+
+    Returns
+    -------
+    float
+        The lowest eigenvalue of H.
+    """
     H = tfim_dense(N, g)
     w = np.linalg.eigvalsh(H)
     return float(w[0])

@@ -1,44 +1,31 @@
-"""CUDA-Graph capture of the one-site TDVP step.
+"""CUDA-graph capture of the one-site TDVP step.
 
-WHY THIS EXISTS. Measurement showed the 1TDVP site-step of a two-packet
-collision run at 10.21 ms scaling as chi^0.14 against a FLOP-bound chi^3, and
-a follow-up measurement closed the mechanism with an operation counter: the
-site-step dispatches ~602 torch operations at a FLAT ~22 us each, against arithmetic of
-tens of kFLOP per operation. The card is not computing, it is waiting to be told what to
-do 602 times. A CUDA graph replays a recorded kernel sequence with a single submission,
-so it attacks the only quantity that was ever binding -- the count.
+At moderate bond dimension a one-site TDVP site step on a GPU is bound by kernel dispatch,
+not arithmetic: it issues several hundred small torch operations, each with a fixed launch
+cost of tens of microseconds, so its time barely grows with chi. A CUDA graph replays a
+recorded kernel sequence with one submission, which removes that per-operation cost.
 
-WHY IT IS NOT SIMPLY `torch.cuda.graph(...)` AROUND THE EXISTING STEP. Three measured
-obstacles:
+The step cannot simply be wrapped in `torch.cuda.graph(...)`:
 
-  * `torch.matrix_exp` is NOT capturable. It reads ||A||_1 back to the host to pick
-    a Pade degree, and a host read inside a capture is a hard error. So is
-    `torch.linalg.eigh`, which would otherwise be the exact route for the
-    real-symmetric Krylov tridiagonal. `backend.expm_taylor` -- solve-free
-    scaling-and-squaring, GEMMs only -- is capturable and agrees with
-    `scipy.linalg.expm` to 4.0e-14 worst case.
-  * `torch.linalg.qr` IS capturable. The 1TDVP centre move was the risk everyone
-    expected and it is not the problem.
-  * Krylov ADAPTIVITY is structurally incompatible with capture: the stop test is a host
-    branch on a device scalar. The schedule must be frozen. `lanczos_expm_fixed` already
-    is exactly that, and this module reuses it rather than re-deriving it.
+  * `torch.matrix_exp` cannot be captured: it reads a norm back to the host to pick a Pade
+    degree. Neither can `torch.linalg.eigh`. `backend.expm_taylor` (scaling and squaring
+    with GEMMs only) can, and agrees with `scipy.linalg.expm` to about 4e-14.
+  * `torch.linalg.qr`, which moves the orthogonality centre, can be captured.
+  * The adaptive Krylov stop is a host branch on a device scalar, so the schedule must be
+    fixed: `lanczos_expm_fixed` is that, and this module uses it.
 
-WHY A FIXED KRYLOV DEPTH IS CHEAP HERE AND EXPENSIVE EAGERLY. This is the whole reason
-the direction is worth re-opening after an earlier attempt at a fixed-depth fast path
-was rejected for measuring 0.92x (a slowdown) when run eagerly. On an
-evolved leg the adaptive solver needs mean m 6.63-6.90 and max 8, so a frozen schedule
-over-serves by 1.45-1.51x in MATVECS. Eagerly, a matvec costs dispatch, so over-service
-costs wall time and the fast path loses. Inside a graph, dispatch is paid once for the
-whole step, so the marginal cost of an over-served Krylov iteration collapses to its
-actual (tiny, chi^0.14) execution time. The graph does not merely speed up the fixed
-schedule -- it removes the reason the fixed schedule was a bad trade.
+A fixed Krylov depth runs more matvecs than the adaptive solver needs. Eagerly each extra
+matvec costs dispatch time, so a fixed schedule is not worth it; inside a graph dispatch is
+paid once for the whole step, so an extra iteration costs only its small execution time.
 
-SHAPE CLASSES. A graph is a recording of kernels at FIXED shapes and FIXED addresses, so
-one graph serves one (a, s, b, c) signature. 1TDVP is exactly bond-preserving, so in the
-saturated-chi bulk -- where a leg spends ~95% of its time -- every interior site shares
-one signature and one graph serves them all. The chain edges ramp (a = 1, 2, 4, ...) and
-get their own graphs, or fall back to eager; `SiteStepGraphCache` counts both so the
-report can state how much of the sweep was actually replayed.
+Shape classes. A graph records kernels at fixed shapes and fixed addresses, so one graph
+serves one (a, s, b, c) signature. One-site TDVP keeps every bond, so once the bonds reach
+their cap the interior sites share one signature and one graph serves them all. The chain
+edges ramp (a = 1, 2, 4, ...) and get their own graphs, or run eagerly; `SiteStepGraphCache`
+counts both, so a report can state how much of the sweep was replayed.
+
+The arithmetic differs from the eager adaptive solver's (see `tnkit.prefix_graph_impl`,
+which captures the eager arithmetic instead).
 """
 from __future__ import annotations
 
@@ -234,12 +221,11 @@ class SiteStepGraph:
     environment update, the zero-site (bond) Krylov exponential, and the absorption of
     the bond into the neighbouring site. Everything except the Python.
 
-    STATIC BUFFERS. Capture fixes ADDRESSES as well as shapes, so the recorded kernels
-    read from wherever their operands happened to live at capture time. The caller's
-    tensors move (every site has different `L[i]`, `M[i]`, ...), so each step copies its
-    five inputs into the buffers the graph was recorded against, replays, and clones the
-    three outputs back out. That is 8 dispatched operations to replace ~602 -- the copies
-    are the price of admission and they are counted in every timing arm here.
+    Static buffers. Capture fixes addresses as well as shapes, so the recorded kernels read
+    from wherever their operands lived at capture time. The caller's tensors move (every
+    site has different `L[i]`, `M[i]`, ...), so each step copies its five inputs into the
+    buffers the graph was recorded against, replays, and clones the three outputs back out:
+    8 dispatched operations in place of several hundred.
     """
 
     def __init__(self, be, torch, sig, dt, m, squarings, taylor_order,
@@ -306,11 +292,9 @@ class SiteStepGraphCache(GraphFaults):
     pool and a 600-site sweep would reserve hundreds of them; sharing is safe here because
     the graphs are replayed strictly one at a time.
 
-    `stats` is reported alongside every timing number in this direction, for the same
-    reason any benchmark here must print the state property
-    it depends on: a graph speed-up is meaningless without knowing what FRACTION of the
-    sweep was replayed rather than run eagerly. Capture and replay failures fall back to
-    eager; see `GraphFaults`.
+    `stats` says what fraction of the sweep was replayed rather than run eagerly, which any
+    timing of a graphed run should report. Capture and replay failures fall back to eager;
+    see `GraphFaults`.
     """
 
     def __init__(self, be, torch, dt, m, squarings=8, taylor_order=18, max_graphs=1024,
@@ -333,31 +317,13 @@ class SiteStepGraphCache(GraphFaults):
         if key in self.refused:
             return None
         if len(self.graphs) >= self.max_graphs:
-            # More shape classes than graphs allowed. This cap is NOT a tuning knob -- it
-            # was the single biggest lever measured in this whole direction, and setting it
-            # too low silently costs most of the speed-up:
-            #
-            #     cap  16 ->  27.2% replayed -> 1.33x
-            #     cap  64 ->  76.2% replayed -> 2.63x
-            #     cap 128 ->  99.3% replayed -> 4.83x   (only 100 graphs ever built)
-            #
-            # A run at wavepacket width sigma=10 has exactly 100 distinct (shape, direction)
-            # signatures, so that sweep SATURATES at 128 and 256/512 buy nothing.
-            #
-            # A LATER RUN THEN MEASURED A DIFFERENT GEOMETRY AND THE OLD DEFAULT OF 256 WAS
-            # TOO LOW. A production run at sigma=30 (N_s=467, chi below the cap throughout)
-            # has **296** distinct signatures. The default that was set *above* its own
-            # measured requirement at the time sat *below* the very next geometry's, and
-            # nothing was lost only because that later run happened to use 1024 graphs and
-            # checked. The default is now 1024, i.e. 3.5x
-            # the largest requirement yet measured rather than 2.6x -- but the real protection
-            # is not the number, it is that the replayed fraction is REPORTED in every result,
-            # so a cap that binds shows up as a number rather than as a quietly bad ratio.
-            #
-            # Signature counts are a property of the bond-dimension PROFILE, not of chi alone:
-            # 1TDVP is exactly bond-preserving, so once the 2TDVP phase ends the profile (and
-            # hence the signature set) is frozen for the rest of the leg. Each graph costs its
-            # static buffers (~1 MB at chi=48) plus a share of one shared pool.
+            # More shape classes than graphs allowed. The cap matters: a cap below the number
+            # of distinct (shape, direction) signatures leaves part of the sweep eager and
+            # loses much of the speed-up. The number of signatures is set by the bond
+            # dimension profile (one-site TDVP keeps it fixed) and grows with the length of
+            # the chain's ramps; long chains can have a few hundred. `stats` reports the
+            # replayed fraction, so a binding cap shows. Each graph costs its static buffers
+            # plus a share of one shared pool.
             return None                       # stay eager rather than thrash
         g = self._capture_or_none(key)
         if g is None:

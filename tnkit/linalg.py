@@ -88,7 +88,7 @@ def randomized_svd_device(A, chi, be, oversample=8, power_iters=2, rng=None,
     expensive work becomes GEMM + QR + one *small* dense SVD (of the ell x n
     projection B), rather than a full dense SVD of A. That plays to GEMM
     throughput instead of the bandwidth-bound dense SVD (which is very slow in
-    fp64 on weak-fp64 GPUs like the L40S).
+    fp64 on GPUs with weak fp64 throughput).
 
     Only the Gaussian sketch touches the host (seeded numpy for reproducibility,
     then moved on-device); its size is n x ell = O(chi*n), negligible vs the
@@ -101,8 +101,8 @@ def randomized_svd_device(A, chi, be, oversample=8, power_iters=2, rng=None,
         subspace error is tiny for the fast-decaying blocks DMRG produces; then the
         singular values/vectors and discarded weight are recovered at fp64 quality
         by projecting the *original* fp64 A onto that subspace. This is the
-        mixed-precision truncation: on the L40S the fp32 sketch/power GEMMs run at
-        ~30-100x the fp64 rate while dE stays at the fp64 floor. On CPU it
+        mixed-precision truncation: on GPUs with weak fp64 the fp32 sketch and power
+        GEMMs run many times faster, while dE stays at the fp64 floor. On CPU it
         buys no speed but reproduces the fp32 numerics, so the accuracy check is
         CPU-testable.
     """
@@ -173,15 +173,14 @@ def gram_truncation(A, chi, be, iso="left"):
     route sets Vh = U^H A / sqrt(lambda) and then uses Vh as an isometry; for small lambda that
     Vh is far from orthonormal and breaks the canonical form.
 
-    Opt-in, not the default: it failed its speed/accuracy acceptance test and is kept for GPU
-    speed. Its rounding differs from an SVD's, so chaotic dynamics run with it do not reproduce
-    an SVD run (see `DMRGOptions.trunc` for the measured size and the safe range).
+    Opt-in, not the default, for speed on GPUs. Its rounding differs from an SVD's, so chaotic
+    dynamics run with it do not reproduce an SVD run (see `DMRGOptions.trunc` for the safe
+    range).
 
     Precision. The Gram eigenvalues carry an absolute error ~ n eps ||A||_2^2, so directions with
     sigma / sigma_max below the floor, ~ sqrt(eps) ~ 1e-8 (up to sqrt(n eps) ~ 1e-7 for
     n ~ 1000), cannot be ranked against each other; which of them is kept is arbitrary, which
-    costs nothing while the cut sits well above the floor (svd_tol >= 1e-12). Measured bounds:
-    below ~1e-8 S_max, S holds norms of the kept directions, not singular values, is off by up
+    costs nothing while the cut sits well above the floor (svd_tol >= 1e-12). Below ~1e-8 S_max, S holds norms of the kept directions, not singular values, is off by up
     to ~1e-8 S_max and need not be monotone; on CUDA one matrix gave S errors of ~2e-10 S_max.
     The discarded weight is the sum of the dropped eigenvalues and is meaningful only above
     ~1e-16 ||A||_F^2. Rank decisions above the floor are unaffected. There is no floor guard.

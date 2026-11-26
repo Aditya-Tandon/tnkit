@@ -2,7 +2,7 @@ API reference
 =============
 
 Generated from the installed package on every build. The :doc:`public` page lists every
-name ``tnkit`` exports; :doc:`blocks` covers the block-sparse tensor modules and
+name ``tnkit`` exports; :doc:`blocks` covers the block-tensor modules and
 :doc:`symmetric` the symmetric-tensor modules (SU(2) and other non-abelian symmetries), both
 provisional; :doc:`opsum` covers the compiler from operator sums to MPOs, and :doc:`thermal`
 thermal states by purification.

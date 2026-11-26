@@ -9,7 +9,7 @@ GEMM-heavy transfer runs on the GPU exactly like the DMRG kernel.
 
 Only the small projected problems (the m x m Hessenberg eig / least-squares, m ~ 30-60)
 touch host numpy — negligible next to the O(D^3) applies, and identical across devices,
-so the torch-cuda path is validated by the torch-cpu == numpy cross-check.
+so the torch-cpu == numpy cross-check also covers the torch-cuda path.
 
 Convention: ``be.vdot(a, b)`` conjugates the first argument (numpy/torch ``vdot``), so
 ``be.vdot(q, w)`` is the Gram-Schmidt coefficient <q|w>.

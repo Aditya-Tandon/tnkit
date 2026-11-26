@@ -7,10 +7,9 @@ MPS truncation needs from a ~2chi x 2chi block. It is NOT exposed by torch.linal
 gesvdj but not Xgesvdr). The C symbols cusolverDnXgesvdr and cusolverDnXgesvdr_bufferSize
 DO exist in libcusolver.so.11, so this module reaches them directly.
 
-STATUS: written against the cuSOLVER 12.x Xgesvdr signature but UNTESTED until the first
-GPU run. A benchmark that uses it should validate every gesvdr result against a torch reference
-SVD (singular values + reconstruction) before trusting any timing, so a signature/layout
-bug surfaces as an explicit mismatch, not as silent garbage.
+Status: written against the cuSOLVER 12.x Xgesvdr signature and not covered by the CPU test
+suite. Check every gesvdr result against a torch reference SVD (singular values and
+reconstruction) before using it, so that a signature or layout error shows as a mismatch.
 
 Reference (cuSOLVER Library, cusolverDnXgesvdr):
   cusolverDnXgesvdr_bufferSize(handle, jobu, jobv, m, n, k, p, niters,
@@ -65,8 +64,8 @@ def _load():
     vp = ctypes.c_void_p
     dt = ctypes.c_int
     sz = ctypes.c_size_t
-    # NB: the 2nd arg is cusolverDnParams_t params (a required opaque handle) -- omitting it
-    # was the bug behind the constant CUSOLVER_STATUS_INVALID_VALUE (status 3).
+    # NB: the 2nd arg is cusolverDnParams_t params (a required opaque handle); without it every
+    # call returns CUSOLVER_STATUS_INVALID_VALUE (status 3).
     common = [vp, vp, ctypes.c_char, ctypes.c_char, i64, i64, i64, i64, i64,  # handle,params,jobu,jobv,m,n,k,p,niters
               dt, vp, i64,          # dataTypeA, A, lda
               dt, vp,               # dataTypeS, S

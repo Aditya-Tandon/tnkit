@@ -7,34 +7,32 @@ the full (d-1)D^2 tangent-space freedom.
 
     |chi_K(n, mu, nu)>  =  sum_j  e^{iK(j + n/2)} | ... A_L  B_mu(j)  A_L ... A_L  B_nu(j+n)  A_R ... >
 
-with the A_L-left / A_R-right window convention (A_L to the left of EVERY insertion, A_R to the
-right of every insertion) -- the earlier
-A_R-in-the-middle form was a gauge bug that made the energy exactly separation-independent.
+with the A_L-left / A_R-right window convention: A_L to the left of every insertion, A_R to the
+right of every insertion. Both B tensors satisfy the left gauge condition, which refers to A_L,
+so an A_R between them would gauge-fix the second against a tensor that is not there.
 
 WHY THE SEPARATION BASIS
 ------------------------
-A state bound by 0.55% has relative extent ~ 1/kappa with kappa = 0.104528 m_1, i.e. about ten
-correlation lengths -- an unmissable exponential in POSITION space, and a feature 2x finer than a
-practical momentum grid. An earlier O(70^2) costing used a momentum grid and was the
-wrong parametrisation.
+A weakly bound state (binding a fraction of a percent of the threshold) has a relative extent
+~ 1/kappa of many correlation lengths: a clear exponential in position space, and a feature
+finer than a practical momentum grid resolves. So the separation, not the relative momentum, is
+the right variable.
 
 ell IS NOT THE NUMBER OF STABLE PARTICLES
 -----------------------------------------
-The one thing that must not be got wrong. The paper builds its reduced basis "from a number of B's
-at different momenta": ell counts how many rigid tensors are needed to represent the MOMENTUM
-DEPENDENCE of a single quasiparticle branch, not how many branches sit below threshold. Measured
-(g=1, h=0.05): a single rigid orbital inflates the inverse
-effective mass of the relative motion by 48.5%; ell = 2 gives 0.46%, ell = 3 gives 0.006%,
-ell = 4 gives 2e-8. Since the m_3 binding is 0.55% of the threshold, ell = 1 is fatal and ell = 3
-is ample. Cost of the contact block scales as ell^4, so ell = 3 is also the affordability line.
+The paper builds its reduced basis "from a number of B's at different momenta": ell counts how
+many rigid tensors are needed to represent the momentum dependence of a single quasiparticle
+branch, not how many branches sit below threshold. A single rigid orbital gets the effective
+mass of the relative motion badly wrong (by tens of percent in the mixed-field Ising chain); the
+error falls by one to two orders of magnitude with each extra orbital, so ell = 3 is usually
+ample for bindings of a fraction of a percent. The contact block costs ell^4.
 
-THE ENERGY ZERO, AND WHY IT AVOIDS A PRIOR REFERENCE BUG
---------------------------------------------------------
+THE ENERGY ZERO
+---------------
 Every matrix element here is returned as <a|H|b> - e_vac <a|b>, with e_vac the energy of the
 VACUUM window contracted through the SAME fixed F_L/F_R environments at the SAME window length.
-An earlier two-particle reference bug (a localised window's energy carries an environment-dependent
-offset that depends on which block structure the reference used) cannot enter, because no
-absolute one-particle number is ever imported: m_1 and the two-particle levels are eigenvalues of
+A localised window's energy carries an offset that depends on its environments, which cannot
+enter here, because no absolute one-particle number is imported: m_1 and the two-particle levels are eigenvalues of
 ONE matrix built from ONE set of environments, and every physical statement below is a difference
 or ratio within that matrix.
 """
@@ -178,9 +176,8 @@ class SeparationBasis:
     def _batch_index(self):
         """Index arrays for the ell^4 (bra-pair, ket-pair) orbital combinations.
 
-        Batching is not an optimisation detail, it is what makes the route affordable. The naive
-        loop costs ell^4 full window sweeps per (n, n', Delta); at ell = 3, chi = 16 and a 60-site
-        window that is ~10 hours for one model point. But at all but FOUR sites of the window every
+        Batching is what makes the route affordable: the naive loop costs ell^4 full window
+        sweeps per (n, n', Delta). But at all but four sites of the window every
         combination carries the SAME pair of tensors, so the sweep can be done once with a leading
         batch axis and only the four insertion sites need per-combination tensors.
         """
@@ -194,9 +191,8 @@ class SeparationBasis:
 
         (ell^2, ell^2) matrices indexed by (mu', nu') x (mu, nu), already referred to the vacuum
         energy zero. The largest term at the edge of the Delta sum is returned so the truncation is
-        checked rather than trusted -- it decays exponentially with the correlation length
-        (measured ratio 0.34 per two sites at g = 1.5), so it is a scaling statement, not a
-        tolerance.
+        checked rather than trusted; it decays exponentially with the correlation length, so it
+        is a scaling statement, not a tolerance.
         """
         be = self.be
         dmax = self.dmax if dmax is None else int(dmax)
@@ -298,8 +294,7 @@ class SeparationBasis:
 
         The point of this routine is that it must reproduce X1^dag H_eff(0) X2 from
         QuasiparticleSolver.apply, which shares NO code with it -- one contracts explicit window
-        tensors against F_L/F_R, the other never forms a window. Same kind of check as the one that
-        caught the two_particle_state gauge bug.
+        tensors against F_L/F_R, the other never forms a window, so agreement checks both.
         """
         be = self.be
         dmax = self.dmax if dmax is None else int(dmax)
@@ -340,8 +335,8 @@ def asymptotic_hopping(Hb, Nb, n_comp, m_range):
     consecutive n0 reported.
 
     Beyond the interaction range the blocks must depend on n' and n only through m = n' - n. That
-    is a property to be MEASURED, not assumed: `drift` is how much T(m) still moves when the anchor
-    n0 is shifted by one, and it is what licenses (or refuses) continuation to large n_max.
+    is a property to be checked, not assumed: `drift` is how much T(m) still moves when the anchor
+    n0 is shifted by one, and it decides whether continuation to large n_max is justified.
     """
     n0 = n_comp - m_range
     if n0 < 1 + m_range:
@@ -361,9 +356,8 @@ def asymptotic_hopping_extrap(Hb, Nb, n_comp, m_range):
     Reading T(m) off a single anchor n_0 is not accurate enough, and the reason is structural
     rather than a matter of pushing n_comp up: the residual interaction decays like exp(-n/xi) with
     xi ~ 1.5 sites, but the anchor must simultaneously satisfy n_0 + m <= n_comp, so raising the
-    hopping range m_range LOWERS the anchor and the two requirements fight. Measured at
-    g = 1.5, chi = 8, n_comp = 12: drift 1.3e-2 at m_range 1 (anchor 11) but 1.8e-1 at m_range 4
-    (anchor 8) -- and 1.3e-2 is already the size of the m_3 binding we are trying to resolve.
+    hopping range m_range lowers the anchor, and the two requirements conflict: the drift at a
+    single anchor can be as large as a small binding energy.
 
     The sequence H(n+m, n) approaches its asymptote geometrically, so one Richardson step removes
     the leading term:
@@ -409,8 +403,8 @@ def assemble(sep, Hb, Nb, n_max, n_comp, m_range):
 
     n1 = dimension of the contact block, so rows/cols [0:n1) are the full one-particle tangent
     space at K = 0 and the rest is the two-particle ladder. The contact block itself is NOT filled
-    here -- it is the one-particle H_eff(0), which comes from the already-validated
-    QuasiparticleSolver and is inserted by the caller.
+    here: it is the one-particle H_eff(0), which comes from `QuasiparticleSolver` and is inserted
+    by the caller.
     """
     L2 = sep.ell ** 2
     n1 = sep.nX * sep.D

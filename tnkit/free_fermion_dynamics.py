@@ -3,9 +3,9 @@
     H(g) = - sum_{i=1}^{N-1} sigma^x_i sigma^x_{i+1}  -  g sum_{i=1}^{N} sigma^z_i
 
 is quadratic under Jordan-Wigner, so a global quench g0 -> g1 is exactly solvable at ANY N and ANY
-time in O(N^3) per time point. That matters because exact diagonalisation dies at N~16 while the
-interesting TDVP regime is N~100+ and long times -- exactly where the entanglement barrier lives
-and where we have had no ground truth at all.
+time in O(N^3) per time point. Exact diagonalisation stops at N of about 16, while TDVP is used
+at N of 100 and more and at long times, where the entanglement barrier lies; this gives an exact
+reference there.
 
 Method. Write H in Majorana operators a_1..a_{2N} (a_{2j-1} = c_j + c_j^dag,
 a_{2j} = i(c_j - c_j^dag)) as H = (i/4) a^T A a with A real antisymmetric. Heisenberg evolution is
@@ -76,9 +76,9 @@ def evolve(gamma0, N, g1, times):
         expm(A t) = O . blockdiag(rot(e_k t)) . O^T,   rot(x) = [[cos x, sin x], [-sin x, cos x]]
 
     so the evolution operator is orthogonal BY CONSTRUCTION at every t. A dense expm per timestep
-    is both slower (one 2N x 2N expm per time point) and, at N=200, was observed to blow up at
-    isolated t (|<sigma^z>| ~ 1e14 at t=0.503) while remaining fine at neighbouring t. The
-    spectral form has no such failure mode and costs one Schur decomposition for the whole scan.
+    is both slower (one 2N x 2N expm per time point) and can lose orthogonality at isolated t
+    for large N, which makes observables blow up there. The spectral form has no such failure
+    mode and costs one Schur decomposition for the whole scan.
     """
     from scipy.linalg import schur
     A = majorana_A(N, g1)
@@ -164,9 +164,8 @@ def apply_sigma_z(gamma, j):
     IMPORTANT SCOPE: this is exact only when the
     state being acted on is itself a single Gaussian state in a DEFINITE PARITY SECTOR. A TFIM
     ground state is (it is a parity eigenstate), so sigma^z on a ground state is exactly
-    representable. The product state (x)|+> is NOT -- it has <P> = 0, an equal superposition of
-    both sectors -- which is why the earlier attempt to treat the thesis spin-flip protocol this
-    way failed, with the error growing 1e-15 -> 4.8e-2.
+    representable. The product state (x)|+> is NOT: it has <P> = 0, an equal superposition of
+    both sectors, and treating it this way gives a large error.
     """
     R = np.ones(gamma.shape[0])
     R[2 * j] = -1.0
@@ -180,16 +179,15 @@ def evolve_td(gamma0, N, g_of_t, times, dt_ref=0.005, magnus=True):
     With H(t) quadratic at every t, the covariance still evolves by an ORTHOGONAL conjugation
     Gamma(t) = R(t) Gamma_0 R(t)^T, but now R solves dR/dt = A(t) R instead of R = expm(A t).
     R is built as a product of step propagators, each an `expm` of a real antisymmetric matrix
-    and therefore orthogonal BY CONSTRUCTION — the same property that fixed the |<sigma^z>| = 5e14
-    blow-up in the sudden-quench reference.
+    and therefore orthogonal by construction, as in the sudden-quench reference.
 
     magnus=True uses the 4th-order two-point Gauss–Legendre Magnus expansion
 
         Omega = (h/2)(A1 + A2) + (sqrt(3) h^2 / 12) [A2, A1],
 
     which costs one extra commutator per step and buys two orders over the midpoint rule. At
-    dt_ref = 0.005 the self-convergence against dt_ref/2 is below 1e-13 for the ramps used here;
-    `ramp_reference_convergence` measures it rather than asserting it.
+    dt_ref = 0.005 the self-convergence against dt_ref/2 is below 1e-13 for smooth ramps;
+    `ramp_reference_convergence` checks it.
 
     The reference must NOT reuse the TDVP integrator's own step size or splitting — that would
     make the "exact" reference share the error being measured.

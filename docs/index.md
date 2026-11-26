@@ -1,9 +1,11 @@
 # tnkit
 
 tnkit is a matrix-product-state (MPS) library for one-dimensional quantum many-body
-problems. It finds ground states with DMRG and evolves states in time with TDVP and TEBD.
-The same code runs on numpy, on PyTorch on the CPU, and on NVIDIA GPUs; you choose with one
-argument.
+problems. It finds ground and excited states with DMRG, evolves states in time with TDVP and
+TEBD, and can conserve abelian and non-abelian symmetries such as U(1) and SU(2). It also
+finds ground states of translation-invariant infinite chains with iDMRG and VUMPS, and
+computes thermal states by purification. The same code runs on numpy, on PyTorch on the CPU,
+and on NVIDIA GPUs; you choose with one argument.
 
 ```python
 from tnkit import dmrg, tfim_mpo
@@ -19,14 +21,14 @@ E, mps, info = dmrg(tfim_mpo(64, g=1.0), chi=64, backend="torch-cuda")  # GPU
 :link: getting-started/index
 :link-type: doc
 
-Install, run a first DMRG and a first TDVP, pick a backend.
+Install, run a first DMRG, a first TDVP and a first symmetric DMRG, pick a backend.
 :::
 
 :::{grid-item-card} User guide
 :link: user-guide/index
 :link-type: doc
 
-MPS and MPO conventions, solver options, symmetries, GPU notes.
+Conventions, building Hamiltonians, the solvers, symmetries, GPUs and performance.
 :::
 
 :::{grid-item-card} API reference
@@ -51,6 +53,7 @@ Where tnkit sits next to TeNPy, ITensor, YASTN and others.
 getting-started/index
 user-guide/index
 api/index
+development
 benchmarks
 related-software
 changelog

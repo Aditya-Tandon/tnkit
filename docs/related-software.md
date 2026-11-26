@@ -26,5 +26,5 @@ the contractions themselves. These projects overlap with it or sit beneath it.
 
 - **TAPP** (Tensor Algebra Processing Primitives) — a proposed standard C interface for tensor
   contraction, which separates applications from contraction backends as BLAS did for
-  matrices. These docs use its vocabulary (modes, extents, free, contracted and batch
-  indices). J. Brandejs et al., [arXiv:2601.07827](https://arxiv.org/abs/2601.07827).
+  matrices. tnkit's source code uses its vocabulary (modes, extents, free, contracted and
+  batch indices); see {doc}`development`. J. Brandejs et al., [arXiv:2601.07827](https://arxiv.org/abs/2601.07827).

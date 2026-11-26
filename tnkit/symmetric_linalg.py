@@ -95,7 +95,7 @@ def truncated_svd(t: SymmetricTensor, chi: Optional[int] = None, *, svd_tol: flo
     method   : 'svd' (the backend's SVD, blocks of equal shape stacked into one call) or 'gram'
                (`tnkit.blocks._svd_block`, block by block, double precision only). The Gram
                route squares the condition number: at condition numbers 1e8 to 1e16 its product
-               U S Vh reconstructs t only to ~1e-8 relative (measured 2e-10 to 2e-8).
+               U S Vh reconstructs t only to about 1e-8 relative.
     density  : `t` is a density matrix (Hermitian, positive semi-definite), whose singular
                values are its eigenvalues lambda: rank and discard by the weight dim(c) lambda
                instead of dim(c) lambda^2.
