@@ -3,7 +3,7 @@
 Notable changes to `tnkit`. Versions follow [semantic versioning](https://semver.org), written
 in Python's form for pre-releases (`0.2.0rc1`).
 
-## [0.3.0] — 2026-11-24
+## [0.3.0] — 2026-11-26
 
 Results on dense tensors are unchanged bit for bit.
 

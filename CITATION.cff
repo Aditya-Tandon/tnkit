@@ -22,5 +22,5 @@ keywords:
   - GPU computing
 # Keep these two together and in step with pyproject.toml's `version` on every tag.
 version: 0.3.0
-date-released: 2026-11-24
+date-released: 2026-11-26
 license: MIT

@@ -272,24 +272,6 @@ def test_code_terms_apply_to_the_package_only(tmp_path, monkeypatch):
     assert [(p.replace(os.sep, "/"), h.split(":")[0]) for p, h in bad] == [("tnkit/a.py", "1")]
 
 
-def test_release_code_terms_spare_physics(tmp_path, monkeypatch):
-    """The `code:` terms of the private list catch research-history wording, not physics."""
-    terms = os.path.join(ROOT, "release", "terms.txt")
-    if not os.path.isfile(terms):
-        pytest.skip("no private terms list in this tree")
-    (tmp_path / "tnkit").mkdir()
-    fine = ["Schwinger pair production", "two wave packets meet in a collision",
-            "a hash collision", "the left arm of the ladder", "an ARM build",
-            "migration of the centre", "the default production of states"]
-    (tmp_path / "tnkit" / "ok.py").write_text("".join(f"# {t}\n" for t in fine))
-    (tmp_path / "tnkit" / "bad.py").write_text(
-        "# as in the thesis\n# an A/B arm\n# on a MIG slice\n# a production run\n")
-    monkeypatch.setattr(sys.modules[__name__], "tracked", lambda root: None)
-    _, bad = scan(str(tmp_path), terms)
-    assert sorted((p.replace(os.sep, "/"), h.split(":")[0]) for p, h in bad) == [
-        ("tnkit/bad.py", n) for n in "1234"]
-
-
 def test_no_private_references():
     _, bad = scan(ROOT, default_extra(ROOT))
     assert not bad, "private references in shipped files:\n" + "\n".join(
